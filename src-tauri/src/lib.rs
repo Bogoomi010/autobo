@@ -3,9 +3,11 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha512};
+use std::sync::Mutex;
 use uuid::Uuid;
 
 const UPBIT_BASE_URL: &str = "https://api.upbit.com";
+type SessionApiKeys = Mutex<Option<ApiKeys>>;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct JwtClaims {
@@ -17,7 +19,7 @@ struct JwtClaims {
     query_hash_alg: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ApiKeys {
     access_key: String,
     secret_key: String,
@@ -180,8 +182,70 @@ async fn get_ticker(markets: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
-async fn get_accounts(keys: ApiKeys) -> Result<Value, String> {
-    let authorization = auth_header(&keys, None)?;
+async fn get_markets(is_details: Option<bool>) -> Result<Value, String> {
+    let url = format!(
+        "{UPBIT_BASE_URL}/v1/market/all?is_details={}",
+        is_details.unwrap_or(false)
+    );
+
+    Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| format!("마켓 목록 요청 실패: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("마켓 목록 응답 오류: {error}"))?
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("마켓 목록 파싱 실패: {error}"))
+}
+
+#[tauri::command]
+async fn get_candles(
+    market: String,
+    timeframe: String,
+    count: Option<u16>,
+) -> Result<Value, String> {
+    let market = market.trim().to_uppercase();
+    if market.is_empty() {
+        return Err("마켓을 입력하세요. 예: KRW-BTC".to_string());
+    }
+
+    let path = match timeframe.trim().to_lowercase().as_str() {
+        "seconds" => "candles/seconds".to_string(),
+        "1m" => "candles/minutes/1".to_string(),
+        "3m" => "candles/minutes/3".to_string(),
+        "5m" => "candles/minutes/5".to_string(),
+        "10m" => "candles/minutes/10".to_string(),
+        "15m" => "candles/minutes/15".to_string(),
+        "30m" => "candles/minutes/30".to_string(),
+        "60m" => "candles/minutes/60".to_string(),
+        "240m" => "candles/minutes/240".to_string(),
+        "1d" => "candles/days".to_string(),
+        "1w" => "candles/weeks".to_string(),
+        "1mo" => "candles/months".to_string(),
+        "1y" => "candles/years".to_string(),
+        _ => return Err("지원하지 않는 차트 주기입니다.".to_string()),
+    };
+
+    let count = count.unwrap_or(100).clamp(1, 200).to_string();
+    let url = format!("{UPBIT_BASE_URL}/v1/{path}");
+
+    Client::new()
+        .get(url)
+        .query(&[("market", market.as_str()), ("count", count.as_str())])
+        .send()
+        .await
+        .map_err(|error| format!("캔들 요청 실패: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("캔들 응답 오류: {error}"))?
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("캔들 파싱 실패: {error}"))
+}
+
+async fn fetch_accounts(keys: &ApiKeys) -> Result<Value, String> {
+    let authorization = auth_header(keys, None)?;
 
     Client::new()
         .get(format!("{UPBIT_BASE_URL}/v1/accounts"))
@@ -194,6 +258,60 @@ async fn get_accounts(keys: ApiKeys) -> Result<Value, String> {
         .json::<Value>()
         .await
         .map_err(|error| format!("잔고 파싱 실패: {error}"))
+}
+
+#[tauri::command]
+async fn get_accounts(keys: ApiKeys) -> Result<Value, String> {
+    fetch_accounts(&keys).await
+}
+
+#[tauri::command]
+fn set_session_api_keys(
+    keys: ApiKeys,
+    session_keys: tauri::State<'_, SessionApiKeys>,
+) -> Result<(), String> {
+    let access_key = keys.access_key.trim().to_string();
+    let secret_key = keys.secret_key.trim().to_string();
+
+    if access_key.is_empty() || secret_key.is_empty() {
+        return Err("API Key를 먼저 입력하세요.".to_string());
+    }
+
+    let mut guard = session_keys
+        .lock()
+        .map_err(|_| "API Key 상태를 사용할 수 없습니다.".to_string())?;
+    *guard = Some(ApiKeys {
+        access_key,
+        secret_key,
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+fn has_session_api_keys(session_keys: tauri::State<'_, SessionApiKeys>) -> Result<bool, String> {
+    let guard = session_keys
+        .lock()
+        .map_err(|_| "API Key 상태를 사용할 수 없습니다.".to_string())?;
+
+    Ok(guard
+        .as_ref()
+        .map(|keys| !keys.access_key.trim().is_empty() && !keys.secret_key.trim().is_empty())
+        .unwrap_or(false))
+}
+
+#[tauri::command]
+async fn get_session_accounts(session_keys: tauri::State<'_, SessionApiKeys>) -> Result<Value, String> {
+    let keys = {
+        let guard = session_keys
+            .lock()
+            .map_err(|_| "API Key 상태를 사용할 수 없습니다.".to_string())?;
+        guard
+            .clone()
+            .ok_or_else(|| "API Key를 먼저 입력하세요.".to_string())?
+    };
+
+    fetch_accounts(&keys).await
 }
 
 #[tauri::command]
@@ -252,10 +370,16 @@ async fn place_order(keys: ApiKeys, order: OrderRequest, dry_run: bool) -> Resul
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(Mutex::new(None::<ApiKeys>))
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_ticker,
+            get_markets,
+            get_candles,
             get_accounts,
+            set_session_api_keys,
+            has_session_api_keys,
+            get_session_accounts,
             get_order_chance,
             place_order
         ])

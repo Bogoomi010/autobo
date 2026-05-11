@@ -22,6 +22,10 @@ body {
   min-height: 100vh;
 }
 
+body.asset-window-body {
+  min-width: 0;
+}
+
 button,
 input,
 select {
@@ -171,6 +175,12 @@ h2 {
   padding: 14px;
 }
 
+.market-chart-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 320px minmax(0, 1fr);
+}
+
 .quote {
   display: grid;
 }
@@ -220,6 +230,182 @@ h2 {
 
 .bottom-grid {
   grid-template-columns: 1.2fr 1fr;
+}
+
+.market-list-panel {
+  align-content: start;
+}
+
+.segmented-control,
+.timeframe-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.segmented-control button,
+.timeframe-buttons button {
+  background: #edf4f6;
+  border: 1px solid #cfe0e5;
+  border-radius: 6px;
+  color: #155f6f;
+  font-size: 0.78rem;
+  font-weight: 800;
+  min-height: 32px;
+  padding: 6px 9px;
+}
+
+.segmented-control button.selected,
+.timeframe-buttons button.selected {
+  background: #1f7a8c;
+  border-color: #1f7a8c;
+  color: #ffffff;
+}
+
+.market-list-meta,
+.chart-toolbar,
+.chart-heading-meta {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.market-list-meta,
+.chart-toolbar {
+  justify-content: space-between;
+}
+
+.market-list-meta span,
+.chart-heading-meta {
+  color: #697983;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.text-button {
+  background: transparent;
+  color: #155f6f;
+  font-size: 0.8rem;
+  font-weight: 800;
+  min-height: 30px;
+  padding: 4px 0;
+}
+
+.market-list {
+  border: 1px solid #dce4ea;
+  border-radius: 6px;
+  display: grid;
+  gap: 6px;
+  max-height: 438px;
+  min-height: 438px;
+  overflow: auto;
+  padding: 8px;
+}
+
+.market-row {
+  background: #ffffff;
+  border: 1px solid #e1e8ed;
+  border-radius: 6px;
+  color: #172026;
+  display: flex;
+  justify-content: space-between;
+  min-height: 58px;
+  min-width: 0;
+  padding: 9px 10px;
+  text-align: left;
+  width: 100%;
+}
+
+.market-row:hover,
+.market-row.selected {
+  border-color: #1f7a8c;
+}
+
+.market-row.selected {
+  background: #edf8fa;
+}
+
+.market-row span {
+  display: grid;
+  min-width: 0;
+}
+
+.market-row strong,
+.market-row em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.market-row strong {
+  font-size: 0.9rem;
+}
+
+.market-row em {
+  color: #697983;
+  font-size: 0.76rem;
+  font-style: normal;
+}
+
+.market-row code,
+.chart-heading-meta code {
+  color: #155f6f;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.chart-panel {
+  align-content: start;
+}
+
+.chart-panel-header {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.chart-frame {
+  border: 1px solid #dce4ea;
+  border-radius: 6px;
+  min-height: 360px;
+  overflow: hidden;
+  position: relative;
+}
+
+.chart-container {
+  height: 360px;
+  width: 100%;
+}
+
+.chart-state,
+.state-box {
+  align-items: center;
+  background: rgba(246, 249, 251, 0.92);
+  color: #697983;
+  display: flex;
+  font-size: 0.9rem;
+  font-weight: 750;
+  justify-content: center;
+  text-align: center;
+}
+
+.chart-state {
+  inset: 0;
+  padding: 18px;
+  position: absolute;
+}
+
+.state-box {
+  border-radius: 6px;
+  min-height: 96px;
+  padding: 14px;
+}
+
+.chart-state.error,
+.state-box.error {
+  background: #fff1f1;
+  color: #a52c2c;
 }
 
 .panel {
@@ -368,15 +554,80 @@ h2 {
   border-left-color: #b4413b;
 }
 
+.asset-shell {
+  display: grid;
+  gap: 14px;
+  min-height: 100vh;
+  padding: 16px;
+}
+
+.asset-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.asset-panel {
+  align-content: start;
+}
+
+.asset-table-wrap {
+  border: 1px solid #dce4ea;
+  border-radius: 6px;
+  overflow: auto;
+}
+
+.asset-table {
+  border-collapse: collapse;
+  min-width: 680px;
+  width: 100%;
+}
+
+.asset-table th,
+.asset-table td {
+  border-bottom: 1px solid #e6edf2;
+  padding: 10px 12px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.asset-table th {
+  background: #f6f9fb;
+  color: #4d5c66;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.asset-table th:first-child,
+.asset-table td:first-child {
+  text-align: left;
+}
+
+.asset-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.asset-currency {
+  color: #155f6f;
+  font-weight: 850;
+}
+
 @media (max-width: 1100px) {
   body {
     min-width: 0;
   }
 
   .market-band,
+  .market-chart-grid,
   .grid,
   .bottom-grid {
     grid-template-columns: 1fr;
+  }
+
+  .chart-panel-header,
+  .chart-toolbar {
+    align-items: stretch;
+    display: grid;
   }
 
   .app-shell {
