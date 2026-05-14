@@ -237,6 +237,7 @@ h2 {
 }
 
 .segmented-control,
+.sort-control,
 .timeframe-buttons {
   display: flex;
   flex-wrap: wrap;
@@ -244,6 +245,7 @@ h2 {
 }
 
 .segmented-control button,
+.sort-control button,
 .timeframe-buttons button {
   background: #edf4f6;
   border: 1px solid #cfe0e5;
@@ -256,6 +258,7 @@ h2 {
 }
 
 .segmented-control button.selected,
+.sort-control button.selected,
 .timeframe-buttons button.selected {
   background: #1f7a8c;
   border-color: #1f7a8c;
@@ -292,6 +295,7 @@ h2 {
 }
 
 .market-list {
+  align-content: start;
   border: 1px solid #dce4ea;
   border-radius: 6px;
   display: grid;
@@ -303,15 +307,16 @@ h2 {
 }
 
 .market-row {
+  align-items: center;
   background: #ffffff;
   border: 1px solid #e1e8ed;
   border-radius: 6px;
   color: #172026;
   display: flex;
+  gap: 10px;
   justify-content: space-between;
-  min-height: 58px;
   min-width: 0;
-  padding: 9px 10px;
+  padding: 7px 9px;
   text-align: left;
   width: 100%;
 }
@@ -327,14 +332,20 @@ h2 {
 
 .market-row span {
   display: grid;
+  gap: 1px;
   min-width: 0;
+}
+
+.market-row-meta {
+  flex: 0 0 auto;
+  justify-items: end;
+  text-align: right;
 }
 
 .market-row strong,
 .market-row em {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .market-row strong {
@@ -352,6 +363,17 @@ h2 {
   color: #155f6f;
   font-size: 0.78rem;
   font-weight: 800;
+  white-space: nowrap;
+}
+
+.market-row-meta strong {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.market-row-meta em {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .chart-panel {

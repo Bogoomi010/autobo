@@ -182,6 +182,26 @@ async fn get_ticker(markets: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
+async fn get_quote_tickers(quote_currencies: String) -> Result<Value, String> {
+    let quote_currencies = quote_currencies.trim().to_uppercase();
+    if quote_currencies.is_empty() {
+        return Err("조회할 기준 통화를 입력하세요. 예: KRW,BTC,USDT".to_string());
+    }
+
+    let url = format!("{UPBIT_BASE_URL}/v1/ticker/all?quote_currencies={quote_currencies}");
+    Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| format!("전체 현재가 요청 실패: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("전체 현재가 응답 오류: {error}"))?
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("전체 현재가 파싱 실패: {error}"))
+}
+
+#[tauri::command]
 async fn get_markets(is_details: Option<bool>) -> Result<Value, String> {
     let url = format!(
         "{UPBIT_BASE_URL}/v1/market/all?is_details={}",
@@ -374,6 +394,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_ticker,
+            get_quote_tickers,
             get_markets,
             get_candles,
             get_accounts,

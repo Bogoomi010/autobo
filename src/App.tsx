@@ -94,6 +94,8 @@ type ChartTimeframe =
   | "1y";
 
 type MarketFilter = "KRW" | "BTC" | "USDT" | "ALL";
+type MarketSortMode = "price" | "changeRate";
+type SortDirection = "desc" | "asc";
 
 type LogEntry = {
   id: number;
@@ -131,6 +133,8 @@ const percentFormat = new Intl.NumberFormat("ko-KR", {
   minimumFractionDigits: 2,
 });
 const ASSET_WINDOW_LABEL = "asset";
+const CHART_AUTO_REFRESH_MS = 15_000;
+const MARKET_TICKER_REFRESH_MS = 10_000;
 
 function tauriKeys(keys: ApiKeys) {
   return {
@@ -179,6 +183,19 @@ function formatAssetNumber(value: string) {
   return numberValue.toLocaleString("ko-KR", {
     maximumFractionDigits: 8,
   });
+}
+
+function formatMarketPrice(market: string, price: number) {
+  if (!Number.isFinite(price)) {
+    return "-";
+  }
+
+  const quoteCurrency = market.split("-")[0] ?? "";
+  const formattedPrice = price.toLocaleString("ko-KR", {
+    maximumFractionDigits: quoteCurrency === "KRW" ? 3 : 8,
+  });
+
+  return `${formattedPrice} ${quoteCurrency}`;
 }
 
 function AssetWindow() {
@@ -289,12 +306,21 @@ function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const lastTradeAtRef = useRef(0);
   const logIdRef = useRef(1);
+  const keysRef = useRef(keys);
+  const dryRunRef = useRef(dryRun);
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const chartRefreshInFlightRef = useRef(false);
+  const marketTickerRefreshInFlightRef = useRef(false);
   const [markets, setMarkets] = useState<MarketInfo[]>([]);
+  const [marketTickers, setMarketTickers] = useState<Record<string, Ticker>>({});
   const [marketFilter, setMarketFilter] = useState<MarketFilter>("ALL");
   const [marketSearch, setMarketSearch] = useState("");
+  const [marketSort, setMarketSort] = useState<{ mode: MarketSortMode; direction: SortDirection }>({
+    mode: "price",
+    direction: "desc",
+  });
   const [marketsLoading, setMarketsLoading] = useState(false);
   const [marketsError, setMarketsError] = useState<string | null>(null);
   const [chartTimeframe, setChartTimeframe] = useState<ChartTimeframe>("5m");
@@ -333,10 +359,16 @@ function App() {
   );
   const hasSelectedMarketWarning =
     selectedMarketInfo?.market_warning === "CAUTION" || selectedMarketInfo?.market_event?.warning === true;
+  const toggleMarketSort = useCallback((mode: MarketSortMode) => {
+    setMarketSort((current) => ({
+      mode,
+      direction: current.mode === mode && current.direction === "desc" ? "asc" : "desc",
+    }));
+  }, []);
   const filteredMarkets = useMemo(() => {
     const search = marketSearch.trim().toLowerCase();
 
-    return markets.filter((item) => {
+    const filtered = markets.filter((item) => {
       const quoteCurrency = item.market.split("-")[0];
       const matchesFilter = marketFilter === "ALL" || quoteCurrency === marketFilter;
       const matchesSearch =
@@ -347,7 +379,37 @@ function App() {
 
       return matchesFilter && matchesSearch;
     });
-  }, [marketFilter, marketSearch, markets]);
+
+    return [...filtered].sort((left, right) => {
+      const leftTicker = marketTickers[left.market];
+      const rightTicker = marketTickers[right.market];
+      const leftValue = marketSort.mode === "price" ? leftTicker?.trade_price : leftTicker?.signed_change_rate;
+      const rightValue = marketSort.mode === "price" ? rightTicker?.trade_price : rightTicker?.signed_change_rate;
+
+      if (leftValue == null && rightValue == null) {
+        return left.market.localeCompare(right.market);
+      }
+
+      if (leftValue == null) {
+        return 1;
+      }
+
+      if (rightValue == null) {
+        return -1;
+      }
+
+      const delta = leftValue - rightValue;
+      return marketSort.direction === "desc" ? -delta : delta;
+    });
+  }, [marketFilter, marketSearch, marketSort, marketTickers, markets]);
+
+  useEffect(() => {
+    keysRef.current = keys;
+  }, [keys]);
+
+  useEffect(() => {
+    dryRunRef.current = dryRun;
+  }, [dryRun]);
 
   const addLog = useCallback((level: LogEntry["level"], message: string) => {
     const next: LogEntry = {
@@ -390,15 +452,52 @@ function App() {
     }
   }, [addLog]);
 
-  const refreshCandles = useCallback(async () => {
-    if (!isMarketCode(normalizedMarket)) {
-      setCandles([]);
-      setChartError("마켓 코드를 선택하거나 입력하세요. 예: KRW-BTC");
-      setChartLoading(false);
+  const refreshMarketTickers = useCallback(async () => {
+    if (markets.length === 0 || marketTickerRefreshInFlightRef.current) {
       return;
     }
 
-    setChartLoading(true);
+    const quoteCurrencies = Array.from(new Set(markets.map((item) => item.market.split("-")[0]).filter(Boolean))).join(",");
+    if (quoteCurrencies === "") {
+      return;
+    }
+
+    marketTickerRefreshInFlightRef.current = true;
+    try {
+      const response = await invoke<Ticker[]>("get_quote_tickers", {
+        quoteCurrencies,
+      });
+      const nextTickers = response.reduce<Record<string, Ticker>>((result, ticker) => {
+        result[ticker.market] = ticker;
+        return result;
+      }, {});
+      setMarketTickers(nextTickers);
+    } catch (error) {
+      addLog("error", String(error));
+    } finally {
+      marketTickerRefreshInFlightRef.current = false;
+    }
+  }, [addLog, markets]);
+
+  const refreshCandles = useCallback(async (options?: { showLoading?: boolean }) => {
+    const showLoading = options?.showLoading ?? true;
+    if (!isMarketCode(normalizedMarket)) {
+      setCandles([]);
+      setChartError("마켓 코드를 선택하거나 입력하세요. 예: KRW-BTC");
+      if (showLoading) {
+        setChartLoading(false);
+      }
+      return;
+    }
+
+    if (chartRefreshInFlightRef.current) {
+      return;
+    }
+
+    chartRefreshInFlightRef.current = true;
+    if (showLoading) {
+      setChartLoading(true);
+    }
     setChartError(null);
     try {
       const response = await invoke<CandleApiResponse[]>("get_candles", {
@@ -417,25 +516,29 @@ function App() {
       setChartError(message);
       addLog("error", message);
     } finally {
-      setChartLoading(false);
+      chartRefreshInFlightRef.current = false;
+      if (showLoading) {
+        setChartLoading(false);
+      }
     }
   }, [addLog, chartTimeframe, normalizedMarket]);
 
   const invokeOrder = useCallback(
     async (order: OrderRequest) => {
+      const currentDryRun = dryRunRef.current;
       const result = await invoke("place_order", {
-        keys: tauriKeys(keys),
+        keys: tauriKeys(keysRef.current),
         order,
-        dryRun,
+        dryRun: currentDryRun,
       });
       setLastOrder(result);
       addLog(
-        dryRun ? "warn" : "info",
-        `${dryRun ? "모의" : "실거래"} 주문 처리: ${order.side}/${order.ord_type} ${order.market}`,
+        currentDryRun ? "warn" : "info",
+        `${currentDryRun ? "모의" : "실거래"} 주문 처리: ${order.side}/${order.ord_type} ${order.market}`,
       );
       return result;
     },
-    [addLog, dryRun, keys],
+    [addLog],
   );
 
   const refreshTicker = useCallback(async () => {
@@ -531,6 +634,16 @@ function App() {
   }, [refreshMarkets]);
 
   useEffect(() => {
+    refreshMarketTickers();
+  }, [refreshMarketTickers]);
+
+  useEffect(() => {
+    const timer = window.setInterval(refreshMarketTickers, MARKET_TICKER_REFRESH_MS);
+
+    return () => window.clearInterval(timer);
+  }, [refreshMarketTickers]);
+
+  useEffect(() => {
     const container = chartContainerRef.current;
     if (!container) {
       return;
@@ -583,6 +696,14 @@ function App() {
 
   useEffect(() => {
     refreshCandles();
+  }, [refreshCandles]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void refreshCandles({ showLoading: false });
+    }, CHART_AUTO_REFRESH_MS);
+
+    return () => window.clearInterval(timer);
   }, [refreshCandles]);
 
   useEffect(() => {
@@ -750,6 +871,24 @@ function App() {
               </button>
             ))}
           </div>
+          <div className="sort-control" aria-label="종목 정렬">
+            <button
+              className={marketSort.mode === "price" ? "selected" : ""}
+              type="button"
+              aria-pressed={marketSort.mode === "price"}
+              onClick={() => toggleMarketSort("price")}
+            >
+              현재가 {marketSort.mode === "price" && marketSort.direction === "asc" ? "낮은 순" : "높은 순"}
+            </button>
+            <button
+              className={marketSort.mode === "changeRate" ? "selected" : ""}
+              type="button"
+              aria-pressed={marketSort.mode === "changeRate"}
+              onClick={() => toggleMarketSort("changeRate")}
+            >
+              {marketSort.mode === "changeRate" && marketSort.direction === "asc" ? "하락률 높은 순" : "상승률 높은 순"}
+            </button>
+          </div>
           <div className="market-list-meta">
             <span>{marketsLoading ? "불러오는 중" : `${filteredMarkets.length} / ${markets.length}개`}</span>
             <button className="text-button" type="button" disabled={marketsLoading} onClick={refreshMarkets}>
@@ -765,20 +904,32 @@ function App() {
             ) : filteredMarkets.length === 0 ? (
               <div className="state-box">조건에 맞는 종목이 없습니다.</div>
             ) : (
-              filteredMarkets.map((item) => (
-                <button
-                  className={`market-row ${item.market === normalizedMarket ? "selected" : ""}`}
-                  key={item.market}
-                  type="button"
-                  onClick={() => setMarket(item.market)}
-                >
-                  <span>
-                    <strong>{item.korean_name}</strong>
-                    <em>{item.english_name}</em>
-                  </span>
-                  <code>{item.market}</code>
-                </button>
-              ))
+              filteredMarkets.map((item) => {
+                const itemTicker = marketTickers[item.market];
+
+                return (
+                  <button
+                    className={`market-row ${item.market === normalizedMarket ? "selected" : ""}`}
+                    key={item.market}
+                    type="button"
+                    onClick={() => setMarket(item.market)}
+                  >
+                    <span>
+                      <strong>{item.korean_name}</strong>
+                      <em>{item.english_name}</em>
+                    </span>
+                    <span className="market-row-meta">
+                      <strong className={itemTicker ? (itemTicker.signed_change_price >= 0 ? "up" : "down") : ""}>
+                        {itemTicker ? formatMarketPrice(item.market, itemTicker.trade_price) : "-"}
+                      </strong>
+                      <em className={itemTicker ? (itemTicker.signed_change_price >= 0 ? "up" : "down") : ""}>
+                        {itemTicker ? `${itemTicker.signed_change_rate >= 0 ? "+" : ""}${percentFormat.format(itemTicker.signed_change_rate * 100)}%` : "-"}
+                      </em>
+                      <code>{item.market}</code>
+                    </span>
+                  </button>
+                );
+              })
             )}
           </div>
         </article>
@@ -809,7 +960,7 @@ function App() {
                 </button>
               ))}
             </div>
-            <button className="text-button" type="button" disabled={chartLoading} onClick={refreshCandles}>
+            <button className="text-button" type="button" disabled={chartLoading} onClick={() => refreshCandles()}>
               <RefreshCw size={15} />
               {selectedTimeframeLabel} 갱신
             </button>
@@ -835,7 +986,10 @@ function App() {
             Access Key
             <input
               value={keys.accessKey}
-              onChange={(event) => setKeys((current) => ({ ...current, accessKey: event.currentTarget.value }))}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                setKeys((current) => ({ ...current, accessKey: value }));
+              }}
               spellCheck={false}
               autoComplete="off"
             />
@@ -844,7 +998,10 @@ function App() {
             Secret Key
             <input
               value={keys.secretKey}
-              onChange={(event) => setKeys((current) => ({ ...current, secretKey: event.currentTarget.value }))}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                setKeys((current) => ({ ...current, secretKey: value }));
+              }}
               type="password"
               spellCheck={false}
               autoComplete="off"
@@ -878,7 +1035,10 @@ function App() {
               <input
                 value={strategy.intervalSec}
                 inputMode="numeric"
-                onChange={(event) => setStrategy((current) => ({ ...current, intervalSec: event.currentTarget.value }))}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setStrategy((current) => ({ ...current, intervalSec: value }));
+                }}
               />
             </label>
             <label>
@@ -886,7 +1046,10 @@ function App() {
               <input
                 value={strategy.cooldownSec}
                 inputMode="numeric"
-                onChange={(event) => setStrategy((current) => ({ ...current, cooldownSec: event.currentTarget.value }))}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setStrategy((current) => ({ ...current, cooldownSec: value }));
+                }}
               />
             </label>
             <label>
@@ -895,7 +1058,10 @@ function App() {
                 value={strategy.buyBelow}
                 inputMode="decimal"
                 placeholder="예: 90000000"
-                onChange={(event) => setStrategy((current) => ({ ...current, buyBelow: event.currentTarget.value }))}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setStrategy((current) => ({ ...current, buyBelow: value }));
+                }}
               />
             </label>
             <label>
@@ -903,7 +1069,10 @@ function App() {
               <input
                 value={strategy.buyKrw}
                 inputMode="decimal"
-                onChange={(event) => setStrategy((current) => ({ ...current, buyKrw: event.currentTarget.value }))}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setStrategy((current) => ({ ...current, buyKrw: value }));
+                }}
               />
             </label>
             <label>
@@ -912,7 +1081,10 @@ function App() {
                 value={strategy.sellAbove}
                 inputMode="decimal"
                 placeholder="예: 110000000"
-                onChange={(event) => setStrategy((current) => ({ ...current, sellAbove: event.currentTarget.value }))}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setStrategy((current) => ({ ...current, sellAbove: value }));
+                }}
               />
             </label>
             <label>
@@ -921,7 +1093,10 @@ function App() {
                 value={strategy.sellVolume}
                 inputMode="decimal"
                 placeholder="예: 0.001"
-                onChange={(event) => setStrategy((current) => ({ ...current, sellVolume: event.currentTarget.value }))}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setStrategy((current) => ({ ...current, sellVolume: value }));
+                }}
               />
             </label>
           </div>
@@ -951,9 +1126,10 @@ function App() {
               side
               <select
                 value={manualOrder.side}
-                onChange={(event) =>
-                  setManualOrder((current) => ({ ...current, side: event.currentTarget.value as OrderRequest["side"] }))
-                }
+                onChange={(event) => {
+                  const value = event.currentTarget.value as OrderRequest["side"];
+                  setManualOrder((current) => ({ ...current, side: value }));
+                }}
               >
                 <option value="bid">bid 매수</option>
                 <option value="ask">ask 매도</option>
@@ -963,12 +1139,13 @@ function App() {
               ord_type
               <select
                 value={manualOrder.ord_type}
-                onChange={(event) =>
+                onChange={(event) => {
+                  const value = event.currentTarget.value as OrderRequest["ord_type"];
                   setManualOrder((current) => ({
                     ...current,
-                    ord_type: event.currentTarget.value as OrderRequest["ord_type"],
-                  }))
-                }
+                    ord_type: value,
+                  }));
+                }}
               >
                 <option value="limit">limit 지정가</option>
                 <option value="price">price 시장가 매수</option>
@@ -981,7 +1158,10 @@ function App() {
               <input
                 value={manualOrder.price ?? ""}
                 inputMode="decimal"
-                onChange={(event) => setManualOrder((current) => ({ ...current, price: event.currentTarget.value }))}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setManualOrder((current) => ({ ...current, price: value }));
+                }}
               />
             </label>
             <label>
@@ -989,23 +1169,30 @@ function App() {
               <input
                 value={manualOrder.volume ?? ""}
                 inputMode="decimal"
-                onChange={(event) => setManualOrder((current) => ({ ...current, volume: event.currentTarget.value }))}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setManualOrder((current) => ({ ...current, volume: value }));
+                }}
               />
             </label>
             <label>
               identifier
               <input
                 value={manualOrder.identifier ?? ""}
-                onChange={(event) => setManualOrder((current) => ({ ...current, identifier: event.currentTarget.value }))}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setManualOrder((current) => ({ ...current, identifier: value }));
+                }}
               />
             </label>
             <label>
               time_in_force
               <select
                 value={manualOrder.time_in_force ?? ""}
-                onChange={(event) =>
-                  setManualOrder((current) => ({ ...current, time_in_force: event.currentTarget.value }))
-                }
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setManualOrder((current) => ({ ...current, time_in_force: value }));
+                }}
               >
                 <option value="">없음</option>
                 <option value="ioc">ioc</option>
