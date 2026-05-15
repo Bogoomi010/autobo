@@ -314,6 +314,65 @@ h2 {
   color: #172026;
 }
 
+.manual-helper {
+  background: #f6f9fb;
+  border: 1px solid #dce4ea;
+  border-radius: 6px;
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.manual-helper-header {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.manual-helper-header span {
+  color: #172026;
+  font-size: 0.86rem;
+  font-weight: 850;
+}
+
+.manual-helper-header em {
+  color: #697983;
+  font-size: 0.76rem;
+  font-style: normal;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.quick-fill-group {
+  align-items: center;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 74px repeat(3, minmax(0, 1fr));
+}
+
+.quick-fill-group span {
+  color: #4d5c66;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.quick-fill-group button {
+  background: #ffffff;
+  border: 1px solid #cfe0e5;
+  border-radius: 6px;
+  color: #155f6f;
+  font-size: 0.76rem;
+  font-weight: 850;
+  min-height: 30px;
+  padding: 5px 6px;
+}
+
+.quick-fill-group button:hover:not(:disabled) {
+  border-color: #1f7a8c;
+}
+
 .market-list {
   align-content: start;
   border: 1px solid #dce4ea;
