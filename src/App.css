@@ -184,6 +184,49 @@ h2 {
 
 .quote {
   display: grid;
+  gap: 8px;
+}
+
+.recent-markets {
+  align-items: center;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.recent-markets span {
+  color: #697983;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.recent-market-list {
+  display: flex;
+  gap: 5px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.recent-market-chip {
+  background: #ffffff;
+  border: 1px solid #d5e0e7;
+  border-radius: 999px;
+  color: #155f6f;
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  font-weight: 850;
+  min-height: 26px;
+  padding: 4px 8px;
+}
+
+.recent-market-chip:hover {
+  border-color: #1f7a8c;
+}
+
+.recent-clear-button {
+  font-size: 0.72rem;
+  min-height: 26px;
 }
 
 .price-tile {

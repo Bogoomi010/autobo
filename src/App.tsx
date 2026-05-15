@@ -161,7 +161,9 @@ const ASSET_WINDOW_LABEL = "asset";
 const CHART_AUTO_REFRESH_MS = 15_000;
 const MARKET_TICKER_REFRESH_MS = 10_000;
 const FAVORITE_MARKETS_STORAGE_KEY = "autobo.favoriteMarkets";
+const RECENT_MARKETS_STORAGE_KEY = "autobo.recentMarkets";
 const USER_PREFERENCES_STORAGE_KEY = "autobo.userPreferences.v1";
+const MAX_RECENT_MARKETS = 8;
 const defaultStrategy: StrategySettings = {
   intervalSec: "10",
   buyBelow: "",
@@ -230,6 +232,40 @@ function loadFavoriteMarkets() {
       .filter((value): value is string => typeof value === "string")
       .map((value) => value.trim().toUpperCase())
       .filter(isMarketCode);
+  } catch {
+    return [];
+  }
+}
+
+function loadRecentMarkets() {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const storedValue = window.localStorage.getItem(RECENT_MARKETS_STORAGE_KEY);
+    if (!storedValue) {
+      return [];
+    }
+
+    const parsedValue = JSON.parse(storedValue);
+    if (!Array.isArray(parsedValue)) {
+      return [];
+    }
+
+    const uniqueMarkets = new Set<string>();
+    for (const value of parsedValue) {
+      if (typeof value !== "string") {
+        continue;
+      }
+
+      const marketCode = value.trim().toUpperCase();
+      if (isMarketCode(marketCode)) {
+        uniqueMarkets.add(marketCode);
+      }
+    }
+
+    return Array.from(uniqueMarkets).slice(0, MAX_RECENT_MARKETS);
   } catch {
     return [];
   }
@@ -653,6 +689,7 @@ function App() {
   const [marketFilter, setMarketFilter] = useState<MarketFilter>(initialPreferences.marketFilter);
   const [marketSearch, setMarketSearch] = useState(initialPreferences.marketSearch);
   const [favoriteMarkets, setFavoriteMarkets] = useState<string[]>(loadFavoriteMarkets);
+  const [recentMarkets, setRecentMarkets] = useState<string[]>(loadRecentMarkets);
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [marketSort, setMarketSort] = useState<MarketSort>(initialPreferences.marketSort);
   const [marketsLoading, setMarketsLoading] = useState(false);
@@ -679,6 +716,10 @@ function App() {
   const hasSelectedMarketWarning =
     selectedMarketInfo?.market_warning === "CAUTION" || selectedMarketInfo?.market_event?.warning === true;
   const favoriteMarketSet = useMemo(() => new Set(favoriteMarkets), [favoriteMarkets]);
+  const visibleRecentMarkets = useMemo(
+    () => recentMarkets.filter((item) => item !== normalizedMarket),
+    [normalizedMarket, recentMarkets],
+  );
   const emptyMarketMessage = showFavoritesOnly
     ? favoriteMarkets.length === 0
       ? "즐겨찾기한 종목이 없습니다."
@@ -699,6 +740,9 @@ function App() {
 
       return [...current, marketCode].sort((left, right) => left.localeCompare(right));
     });
+  }, []);
+  const clearRecentMarkets = useCallback(() => {
+    setRecentMarkets([]);
   }, []);
   const activeManualOrderPreset = useMemo<ManualOrderPreset | null>(() => {
     if (manualOrder.ord_type === "limit") {
@@ -795,6 +839,27 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(FAVORITE_MARKETS_STORAGE_KEY, JSON.stringify(favoriteMarkets));
   }, [favoriteMarkets]);
+
+  useEffect(() => {
+    if (!isMarketCode(normalizedMarket)) {
+      return;
+    }
+
+    setRecentMarkets((current) => {
+      const nextMarkets = [normalizedMarket, ...current.filter((item) => item !== normalizedMarket)].slice(
+        0,
+        MAX_RECENT_MARKETS,
+      );
+      const unchanged =
+        nextMarkets.length === current.length && nextMarkets.every((item, index) => item === current[index]);
+
+      return unchanged ? current : nextMarkets;
+    });
+  }, [normalizedMarket]);
+
+  useEffect(() => {
+    window.localStorage.setItem(RECENT_MARKETS_STORAGE_KEY, JSON.stringify(recentMarkets));
+  }, [recentMarkets]);
 
   useEffect(() => {
     saveUserPreferences({
@@ -1256,6 +1321,21 @@ function App() {
             onChange={(event) => setMarket(event.currentTarget.value)}
             onBlur={() => setMarket((value) => value.trim().toUpperCase() || "KRW-BTC")}
           />
+          {visibleRecentMarkets.length > 0 ? (
+            <div className="recent-markets" aria-label="최근 선택 종목">
+              <span>최근</span>
+              <div className="recent-market-list">
+                {visibleRecentMarkets.map((item) => (
+                  <button className="recent-market-chip" key={item} type="button" onClick={() => setMarket(item)}>
+                    {item}
+                  </button>
+                ))}
+              </div>
+              <button className="text-button recent-clear-button" type="button" onClick={clearRecentMarkets}>
+                지우기
+              </button>
+            </div>
+          ) : null}
         </div>
         <div className="price-tile">
           <span>현재가</span>
