@@ -14,6 +14,7 @@ import {
   Activity,
   AlertTriangle,
   BarChart3,
+  Calculator,
   ExternalLink,
   KeyRound,
   ListChecks,
@@ -193,6 +194,23 @@ const defaultUserPreferences: UserPreferences = {
   strategy: defaultStrategy,
   manualOrder: defaultManualOrder,
 };
+const quickBuyAmountsByQuote: Record<string, { label: string; value: string }[]> = {
+  KRW: [
+    { label: "1만", value: "10000" },
+    { label: "5만", value: "50000" },
+    { label: "10만", value: "100000" },
+  ],
+  BTC: [
+    { label: "0.0001", value: "0.0001" },
+    { label: "0.001", value: "0.001" },
+    { label: "0.01", value: "0.01" },
+  ],
+  USDT: [
+    { label: "10", value: "10" },
+    { label: "50", value: "50" },
+    { label: "100", value: "100" },
+  ],
+};
 
 function compactJson(value: unknown) {
   return JSON.stringify(value, null, 2);
@@ -369,6 +387,40 @@ function formatMarketPrice(market: string, price: number) {
   });
 
   return `${formattedPrice} ${quoteCurrency}`;
+}
+
+function formatDecimalInput(value: number, maximumFractionDigits = 8) {
+  if (!Number.isFinite(value)) {
+    return "";
+  }
+
+  return value.toLocaleString("en-US", {
+    maximumFractionDigits,
+    useGrouping: false,
+  });
+}
+
+function formatOrderQuote(value: number, currency: string) {
+  if (!Number.isFinite(value)) {
+    return "-";
+  }
+
+  return `${value.toLocaleString("ko-KR", {
+    maximumFractionDigits: currency === "KRW" ? 0 : 8,
+  })} ${currency}`;
+}
+
+function formatOrderQuantity(value: number, currency: string) {
+  if (!Number.isFinite(value)) {
+    return "-";
+  }
+
+  return `${value.toLocaleString("ko-KR", { maximumFractionDigits: 8 })} ${currency}`;
+}
+
+function parsePositiveNumber(value: string | null | undefined) {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : null;
 }
 
 function parseAssetAmount(value: string) {
@@ -672,6 +724,12 @@ function App() {
     () => markets.find((item) => item.market === normalizedMarket) ?? null,
     [markets, normalizedMarket],
   );
+  const [quoteCurrency, baseCurrency] = useMemo(() => {
+    const [quote = "KRW", base = ""] = normalizedMarket.split("-");
+    return [quote, base];
+  }, [normalizedMarket]);
+  const activeTicker = ticker?.market === normalizedMarket ? ticker : marketTickers[normalizedMarket] ?? null;
+  const quickBuyAmounts = quickBuyAmountsByQuote[quoteCurrency] ?? [];
   const selectedTimeframeLabel = useMemo(
     () => chartTimeframes.find((item) => item.value === chartTimeframe)?.label ?? chartTimeframe,
     [chartTimeframe],
@@ -715,6 +773,57 @@ function App() {
 
     return null;
   }, [manualOrder.ord_type, manualOrder.side]);
+  const manualOrderEstimate = useMemo(() => {
+    const priceValue = parsePositiveNumber(manualOrder.price);
+    const volumeValue = parsePositiveNumber(manualOrder.volume);
+    const tradePrice = activeTicker?.trade_price;
+
+    if (manualOrder.side === "bid" && manualOrder.ord_type === "price") {
+      if (!priceValue) {
+        return "매수금액 대기";
+      }
+
+      if (tradePrice && tradePrice > 0) {
+        return `예상 매수 수량 ${formatOrderQuantity(priceValue / tradePrice, baseCurrency)}`;
+      }
+
+      return `매수금액 ${formatOrderQuote(priceValue, quoteCurrency)}`;
+    }
+
+    if (manualOrder.side === "ask" && manualOrder.ord_type === "market") {
+      if (!volumeValue) {
+        return "매도 수량 대기";
+      }
+
+      if (tradePrice && tradePrice > 0) {
+        return `예상 매도 금액 ${formatOrderQuote(volumeValue * tradePrice, quoteCurrency)}`;
+      }
+
+      return `매도 수량 ${formatOrderQuantity(volumeValue, baseCurrency)}`;
+    }
+
+    if (priceValue && volumeValue) {
+      return `예상 주문 금액 ${formatOrderQuote(priceValue * volumeValue, quoteCurrency)}`;
+    }
+
+    if (priceValue) {
+      return `가격 ${formatOrderQuote(priceValue, quoteCurrency)}`;
+    }
+
+    if (volumeValue) {
+      return `수량 ${formatOrderQuantity(volumeValue, baseCurrency)}`;
+    }
+
+    return "입력 대기";
+  }, [
+    activeTicker?.trade_price,
+    baseCurrency,
+    manualOrder.ord_type,
+    manualOrder.price,
+    manualOrder.side,
+    manualOrder.volume,
+    quoteCurrency,
+  ]);
   const applyManualOrderPreset = useCallback(
     (preset: ManualOrderPreset) => {
       setManualOrder((current) => {
@@ -746,6 +855,31 @@ function App() {
           ord_type: "limit",
         };
       });
+    },
+    [normalizedMarket],
+  );
+  const fillCurrentPrice = useCallback(() => {
+    if (!activeTicker) {
+      return;
+    }
+
+    setManualOrder((current) => ({
+      ...current,
+      market: normalizedMarket,
+      price: formatDecimalInput(activeTicker.trade_price, quoteCurrency === "KRW" ? 3 : 8),
+    }));
+  }, [activeTicker, normalizedMarket, quoteCurrency]);
+  const applyQuickBuyAmount = useCallback(
+    (amount: string) => {
+      setManualOrder((current) => ({
+        ...current,
+        market: normalizedMarket,
+        side: "bid",
+        volume: "",
+        price: amount,
+        ord_type: "price",
+        time_in_force: "",
+      }));
     },
     [normalizedMarket],
   );
@@ -1596,6 +1730,35 @@ function App() {
               <ListChecks size={15} />
               시장가 매도
             </button>
+          </div>
+          <div className="manual-assist">
+            <div className="manual-assist-meta">
+              <span>
+                {quoteCurrency} / {baseCurrency}
+              </span>
+              <strong>{activeTicker ? formatMarketPrice(normalizedMarket, activeTicker.trade_price) : "현재가 대기"}</strong>
+            </div>
+            <div className="manual-assist-actions">
+              <button
+                className="subtle-button"
+                type="button"
+                disabled={!activeTicker || manualOrder.ord_type === "price"}
+                onClick={fillCurrentPrice}
+              >
+                <Calculator size={15} />
+                현재가 가격
+              </button>
+              {quickBuyAmounts.map((amount) => (
+                <button className="subtle-button" type="button" key={amount.value} onClick={() => applyQuickBuyAmount(amount.value)}>
+                  <Calculator size={15} />
+                  {amount.label} {quoteCurrency}
+                </button>
+              ))}
+            </div>
+            <div className="manual-estimate">
+              <Calculator size={16} />
+              <span>{manualOrderEstimate}</span>
+            </div>
           </div>
           <div className="form-grid">
             <label>

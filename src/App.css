@@ -314,6 +314,58 @@ h2 {
   color: #172026;
 }
 
+.manual-assist {
+  background: #f6f9fb;
+  border: 1px solid #dce4ea;
+  border-radius: 6px;
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.manual-assist-meta,
+.manual-estimate {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.manual-assist-meta span,
+.manual-estimate {
+  color: #51616b;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.manual-assist-meta strong {
+  color: #172026;
+  font-size: 0.92rem;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.manual-assist-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.manual-assist-actions .subtle-button {
+  min-height: 34px;
+  padding: 6px 9px;
+}
+
+.manual-estimate {
+  background: #ffffff;
+  border: 1px solid #e1e8ed;
+  border-radius: 6px;
+  justify-content: flex-start;
+  min-height: 36px;
+  padding: 8px 10px;
+}
+
 .market-list {
   align-content: start;
   border: 1px solid #dce4ea;
