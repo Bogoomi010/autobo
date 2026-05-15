@@ -1,5 +1,9 @@
 # Agent Instructions
 
+## 빌드 규칙
+
+- 항상 작업이 끝난 뒤에는 `npm run build`가 아닌 `npm run tauri build`를 진행합니다.
+
 이 프로젝트에서 작업할 때는 코드 변경 전에 `docs` 경로의 문서를 먼저 확인한다.
 
 ## 필수 참조 문서

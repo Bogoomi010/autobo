@@ -3,6 +3,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha512};
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use uuid::Uuid;
 
@@ -78,6 +80,71 @@ fn auth_header(keys: &ApiKeys, query_string: Option<&str>) -> Result<String, Str
     create_jwt(keys, query_string).map(|token| format!("Bearer {token}"))
 }
 
+fn upbitkey_path() -> Result<PathBuf, String> {
+    let exe_path = std::env::current_exe()
+        .map_err(|error| format!("실행 파일 경로를 확인할 수 없습니다: {error}"))?;
+    let exe_dir = exe_path
+        .parent()
+        .ok_or_else(|| "실행 파일 폴더를 확인할 수 없습니다.".to_string())?;
+
+    Ok(exe_dir.join("upbitkey"))
+}
+
+fn parse_upbitkey_contents(contents: &str) -> Result<ApiKeys, String> {
+    let mut access_key: Option<String> = None;
+    let mut secret_key: Option<String> = None;
+    let mut pending_label: Option<&str> = None;
+
+    for raw_line in contents.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let normalized = line
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>()
+            .to_ascii_lowercase();
+
+        if normalized == "accesskey" {
+            pending_label = Some("access");
+            continue;
+        }
+
+        if normalized == "secretkey" {
+            pending_label = Some("secret");
+            continue;
+        }
+
+        match pending_label.take() {
+            Some("access") => access_key = Some(line.to_string()),
+            Some("secret") => secret_key = Some(line.to_string()),
+            _ => {}
+        }
+    }
+
+    let access_key = access_key
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "upbitkey 파일에서 Access key를 찾을 수 없습니다.".to_string())?;
+    let secret_key = secret_key
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "upbitkey 파일에서 Secret key를 찾을 수 없습니다.".to_string())?;
+
+    Ok(ApiKeys {
+        access_key,
+        secret_key,
+    })
+}
+
+fn load_upbitkey() -> Result<ApiKeys, String> {
+    let path = upbitkey_path()?;
+    let contents = fs::read_to_string(path)
+        .map_err(|error| format!("upbitkey 파일을 읽을 수 없습니다: {error}"))?;
+
+    parse_upbitkey_contents(&contents)
+}
+
 fn order_query_string(order: &OrderRequest) -> String {
     let mut pairs = vec![
         format!("market={}", order.market),
@@ -122,7 +189,10 @@ fn validate_order(order: &OrderRequest) -> Result<(), String> {
         return Err("side는 bid 또는 ask만 사용할 수 있습니다.".to_string());
     }
 
-    if !matches!(order.ord_type.as_str(), "limit" | "price" | "market" | "best") {
+    if !matches!(
+        order.ord_type.as_str(),
+        "limit" | "price" | "market" | "best"
+    ) {
         return Err("ord_type은 limit, price, market, best만 사용할 수 있습니다.".to_string());
     }
 
@@ -138,10 +208,14 @@ fn validate_order(order: &OrderRequest) -> Result<(), String> {
             require_present("매도 수량", &order.volume)?;
         }
         ("bid", "market") => {
-            return Err("업비트 시장가 매수는 ord_type=price와 매수 금액 price를 사용하세요.".to_string());
+            return Err(
+                "업비트 시장가 매수는 ord_type=price와 매수 금액 price를 사용하세요.".to_string(),
+            );
         }
         ("ask", "price") => {
-            return Err("업비트 시장가 매도는 ord_type=market과 매도 수량 volume을 사용하세요.".to_string());
+            return Err(
+                "업비트 시장가 매도는 ord_type=market과 매도 수량 volume을 사용하세요.".to_string(),
+            );
         }
         _ => {}
     }
@@ -281,47 +355,24 @@ async fn fetch_accounts(keys: &ApiKeys) -> Result<Value, String> {
 }
 
 #[tauri::command]
-async fn get_accounts(keys: ApiKeys) -> Result<Value, String> {
-    fetch_accounts(&keys).await
-}
-
-#[tauri::command]
-fn set_session_api_keys(
-    keys: ApiKeys,
+async fn connect_upbitkey_account(
     session_keys: tauri::State<'_, SessionApiKeys>,
-) -> Result<(), String> {
-    let access_key = keys.access_key.trim().to_string();
-    let secret_key = keys.secret_key.trim().to_string();
-
-    if access_key.is_empty() || secret_key.is_empty() {
-        return Err("API Key를 먼저 입력하세요.".to_string());
-    }
+) -> Result<Value, String> {
+    let keys = load_upbitkey()?;
+    let accounts = fetch_accounts(&keys).await?;
 
     let mut guard = session_keys
         .lock()
         .map_err(|_| "API Key 상태를 사용할 수 없습니다.".to_string())?;
-    *guard = Some(ApiKeys {
-        access_key,
-        secret_key,
-    });
+    *guard = Some(keys);
 
-    Ok(())
+    Ok(accounts)
 }
 
 #[tauri::command]
-fn has_session_api_keys(session_keys: tauri::State<'_, SessionApiKeys>) -> Result<bool, String> {
-    let guard = session_keys
-        .lock()
-        .map_err(|_| "API Key 상태를 사용할 수 없습니다.".to_string())?;
-
-    Ok(guard
-        .as_ref()
-        .map(|keys| !keys.access_key.trim().is_empty() && !keys.secret_key.trim().is_empty())
-        .unwrap_or(false))
-}
-
-#[tauri::command]
-async fn get_session_accounts(session_keys: tauri::State<'_, SessionApiKeys>) -> Result<Value, String> {
+async fn get_session_accounts(
+    session_keys: tauri::State<'_, SessionApiKeys>,
+) -> Result<Value, String> {
     let keys = {
         let guard = session_keys
             .lock()
@@ -335,11 +386,23 @@ async fn get_session_accounts(session_keys: tauri::State<'_, SessionApiKeys>) ->
 }
 
 #[tauri::command]
-async fn get_order_chance(keys: ApiKeys, market: String) -> Result<Value, String> {
+async fn get_order_chance(
+    market: String,
+    session_keys: tauri::State<'_, SessionApiKeys>,
+) -> Result<Value, String> {
     let market = market.trim().to_uppercase();
     if market.is_empty() {
         return Err("마켓을 입력하세요. 예: KRW-BTC".to_string());
     }
+
+    let keys = {
+        let guard = session_keys
+            .lock()
+            .map_err(|_| "API Key 상태를 사용할 수 없습니다.".to_string())?;
+        guard
+            .clone()
+            .ok_or_else(|| "API Key를 먼저 연동하세요.".to_string())?
+    };
 
     let query_string = format!("market={market}");
     let authorization = auth_header(&keys, Some(&query_string))?;
@@ -358,7 +421,11 @@ async fn get_order_chance(keys: ApiKeys, market: String) -> Result<Value, String
 }
 
 #[tauri::command]
-async fn place_order(keys: ApiKeys, order: OrderRequest, dry_run: bool) -> Result<Value, String> {
+async fn place_order(
+    order: OrderRequest,
+    dry_run: bool,
+    session_keys: tauri::State<'_, SessionApiKeys>,
+) -> Result<Value, String> {
     validate_order(&order)?;
     let query_string = order_query_string(&order);
 
@@ -370,6 +437,15 @@ async fn place_order(keys: ApiKeys, order: OrderRequest, dry_run: bool) -> Resul
             "message": "모의 실행입니다. 업비트로 주문을 전송하지 않았습니다."
         }));
     }
+
+    let keys = {
+        let guard = session_keys
+            .lock()
+            .map_err(|_| "API Key 상태를 사용할 수 없습니다.".to_string())?;
+        guard
+            .clone()
+            .ok_or_else(|| "API Key를 먼저 연동하세요.".to_string())?
+    };
 
     let authorization = auth_header(&keys, Some(&query_string))?;
 
@@ -397,13 +473,38 @@ pub fn run() {
             get_quote_tickers,
             get_markets,
             get_candles,
-            get_accounts,
-            set_session_api_keys,
-            has_session_api_keys,
+            connect_upbitkey_account,
             get_session_accounts,
             get_order_chance,
             place_order
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_upbitkey_label_value_lines() {
+        let keys = parse_upbitkey_contents(
+            "Access key \nHgxadfsfda2dsadsadsaxqweNfdcxcnfdasfaso5excxz\r\nSecret key \nnfdasffdN3dsadsadsadczxvcXfdafG85n4Xx\n",
+        )
+        .expect("keys should parse");
+
+        assert_eq!(
+            keys.access_key,
+            "Hgxadfsfda2dsadsadsaxqweNfdcxcnfdasfaso5excxz"
+        );
+        assert_eq!(keys.secret_key, "nfdasffdN3dsadsadsadczxvcXfdafG85n4Xx");
+    }
+
+    #[test]
+    fn rejects_missing_secret_key() {
+        let error = parse_upbitkey_contents("Access key\nabc\n")
+            .expect_err("missing secret key should fail");
+
+        assert!(error.contains("Secret key"));
+    }
 }

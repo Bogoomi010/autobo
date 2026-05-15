@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
@@ -14,20 +14,18 @@ import {
   Activity,
   AlertTriangle,
   BarChart3,
+  ExternalLink,
   KeyRound,
+  ListChecks,
   Play,
   RefreshCw,
   Send,
   ShieldCheck,
   Square,
+  Star,
   Wallet,
 } from "lucide-react";
 import "./App.css";
-
-type ApiKeys = {
-  accessKey: string;
-  secretKey: string;
-};
 
 type OrderRequest = {
   market: string;
@@ -96,6 +94,7 @@ type ChartTimeframe =
 type MarketFilter = "KRW" | "BTC" | "USDT" | "ALL";
 type MarketSortMode = "price" | "changeRate";
 type SortDirection = "desc" | "asc";
+type ManualOrderPreset = "limit" | "marketBuy" | "marketSell";
 
 type LogEntry = {
   id: number;
@@ -135,13 +134,7 @@ const percentFormat = new Intl.NumberFormat("ko-KR", {
 const ASSET_WINDOW_LABEL = "asset";
 const CHART_AUTO_REFRESH_MS = 15_000;
 const MARKET_TICKER_REFRESH_MS = 10_000;
-
-function tauriKeys(keys: ApiKeys) {
-  return {
-    access_key: keys.accessKey.trim(),
-    secret_key: keys.secretKey.trim(),
-  };
-}
+const FAVORITE_MARKETS_STORAGE_KEY = "autobo.favoriteMarkets";
 
 function compactJson(value: unknown) {
   return JSON.stringify(value, null, 2);
@@ -159,6 +152,31 @@ function isMarketCode(value: string) {
   return /^[A-Z]+-[A-Z0-9]+$/.test(value);
 }
 
+function loadFavoriteMarkets() {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const storedValue = window.localStorage.getItem(FAVORITE_MARKETS_STORAGE_KEY);
+    if (!storedValue) {
+      return [];
+    }
+
+    const parsedValue = JSON.parse(storedValue);
+    if (!Array.isArray(parsedValue)) {
+      return [];
+    }
+
+    return parsedValue
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim().toUpperCase())
+      .filter(isMarketCode);
+  } catch {
+    return [];
+  }
+}
+
 function toChartCandle(candle: CandleApiResponse): ChartCandle | null {
   const timestamp = Date.parse(`${candle.candle_date_time_utc}Z`);
   if (Number.isNaN(timestamp)) {
@@ -174,17 +192,6 @@ function toChartCandle(candle: CandleApiResponse): ChartCandle | null {
   };
 }
 
-function formatAssetNumber(value: string) {
-  const numberValue = Number(value);
-  if (!Number.isFinite(numberValue)) {
-    return value || "-";
-  }
-
-  return numberValue.toLocaleString("ko-KR", {
-    maximumFractionDigits: 8,
-  });
-}
-
 function formatMarketPrice(market: string, price: number) {
   if (!Number.isFinite(price)) {
     return "-";
@@ -198,19 +205,130 @@ function formatMarketPrice(market: string, price: number) {
   return `${formattedPrice} ${quoteCurrency}`;
 }
 
+function parseAssetAmount(value: string) {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
+function getAssetMarket(account: AssetAccount) {
+  const currency = account.currency.trim().toUpperCase();
+  const unitCurrency = (account.unit_currency || "KRW").trim().toUpperCase();
+
+  if (!currency || currency === unitCurrency) {
+    return null;
+  }
+
+  return `${unitCurrency}-${currency}`;
+}
+
+function formatAssetQuantity(value: number, currency: string) {
+  return `${value.toLocaleString("ko-KR", { maximumFractionDigits: 8 })} ${currency}`;
+}
+
+function formatAssetQuote(value: number | null, unitCurrency: string) {
+  if (value === null || !Number.isFinite(value)) {
+    return "-";
+  }
+
+  return `${value.toLocaleString("ko-KR", {
+    maximumFractionDigits: unitCurrency === "KRW" ? 1 : 8,
+    minimumFractionDigits: unitCurrency === "KRW" ? 1 : 0,
+  })} ${unitCurrency}`;
+}
+
+function formatAssetMoney(value: number | null, unitCurrency: string) {
+  if (value === null || !Number.isFinite(value)) {
+    return "-";
+  }
+
+  return `${Math.round(value).toLocaleString("ko-KR")} ${unitCurrency}`;
+}
+
+function formatAssetProfit(value: number | null, unitCurrency: string) {
+  if (value === null || !Number.isFinite(value)) {
+    return "-";
+  }
+
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  return `${sign}${Math.round(Math.abs(value)).toLocaleString("ko-KR")} ${unitCurrency}`;
+}
+
+function formatAssetProfitRate(value: number | null) {
+  if (value === null || !Number.isFinite(value)) {
+    return "-";
+  }
+
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  return `${sign}${percentFormat.format(Math.abs(value))}%`;
+}
+
+function getProfitTone(value: number | null) {
+  if (value === null || value === 0) {
+    return "flat";
+  }
+
+  return value > 0 ? "up" : "down";
+}
+
 function AssetWindow() {
   const [accounts, setAccounts] = useState<AssetAccount[]>([]);
+  const [assetTickers, setAssetTickers] = useState<Record<string, Ticker>>({});
+  const [marketNames, setMarketNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
 
   const refreshAccounts = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setQuoteError(null);
     try {
       const response = await invoke<AssetAccount[]>("get_session_accounts");
-      setAccounts(Array.isArray(response) ? response : []);
+      const nextAccounts = Array.isArray(response) ? response : [];
+      setAccounts(nextAccounts);
+
+      const quoteCurrencies = Array.from(
+        new Set(
+          nextAccounts
+            .filter((account) => account.currency.trim().toUpperCase() !== "KRW")
+            .map((account) => (account.unit_currency || "KRW").trim().toUpperCase())
+            .filter(Boolean),
+        ),
+      );
+
+      const [tickerResponse, marketResponse] = await Promise.allSettled([
+        quoteCurrencies.length > 0
+          ? invoke<Ticker[]>("get_quote_tickers", { quoteCurrencies: quoteCurrencies.join(",") })
+          : Promise.resolve([]),
+        invoke<MarketInfo[]>("get_markets", { isDetails: false }),
+      ]);
+
+      if (tickerResponse.status === "fulfilled") {
+        setAssetTickers(
+          tickerResponse.value.reduce<Record<string, Ticker>>((result, ticker) => {
+            result[ticker.market] = ticker;
+            return result;
+          }, {}),
+        );
+      } else {
+        setAssetTickers({});
+        setQuoteError(String(tickerResponse.reason));
+      }
+
+      if (marketResponse.status === "fulfilled") {
+        setMarketNames(
+          marketResponse.value.reduce<Record<string, string>>((result, market) => {
+            result[market.market] = market.korean_name;
+            return result;
+          }, {}),
+        );
+      } else {
+        setMarketNames({});
+      }
     } catch (nextError) {
       setAccounts([]);
+      setAssetTickers({});
+      setMarketNames({});
       setError(String(nextError));
     } finally {
       setLoading(false);
@@ -227,6 +345,10 @@ function AssetWindow() {
   }, [refreshAccounts]);
 
   useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) {
+      return;
+    }
+
     let unlisten: (() => void) | undefined;
     WebviewWindow.getCurrent()
       .listen("asset-session-updated", () => {
@@ -258,30 +380,75 @@ function AssetWindow() {
         {error ? <div className="state-box error">{error}</div> : null}
         {!error && loading && accounts.length === 0 ? <div className="state-box">자산 정보를 불러오는 중입니다.</div> : null}
         {!error && !loading && accounts.length === 0 ? <div className="state-box">표시할 자산 정보가 없습니다.</div> : null}
+        {!error && quoteError ? <div className="asset-quote-warning">현재가 일부를 불러오지 못했습니다. 보유 수량과 평균 매수가는 그대로 표시됩니다.</div> : null}
         {!error && accounts.length > 0 ? (
-          <div className="asset-table-wrap">
-            <table className="asset-table">
-              <thead>
-                <tr>
-                  <th>통화</th>
-                  <th>보유 수량</th>
-                  <th>주문 중 수량</th>
-                  <th>평균 매수가</th>
-                  <th>평가 기준 통화</th>
-                </tr>
-              </thead>
-              <tbody>
-                {accounts.map((account) => (
-                  <tr key={`${account.currency}-${account.unit_currency}`}>
-                    <td className="asset-currency">{account.currency}</td>
-                    <td>{formatAssetNumber(account.balance)}</td>
-                    <td>{formatAssetNumber(account.locked)}</td>
-                    <td>{formatAssetNumber(account.avg_buy_price)}</td>
-                    <td>{account.unit_currency || "-"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="asset-card-list">
+            {accounts.map((account) => {
+              const market = getAssetMarket(account);
+              const unitCurrency = (account.unit_currency || "KRW").trim().toUpperCase();
+              const balance = parseAssetAmount(account.balance);
+              const locked = parseAssetAmount(account.locked);
+              const avgBuyPrice = parseAssetAmount(account.avg_buy_price);
+              const ticker = market ? assetTickers[market] : null;
+              const currentPrice = account.currency.trim().toUpperCase() === "KRW" ? 1 : ticker?.trade_price ?? null;
+              const evaluationAmount = currentPrice === null ? null : balance * currentPrice;
+              const purchaseAmount = avgBuyPrice > 0 ? balance * avgBuyPrice : 0;
+              const profitAmount = evaluationAmount !== null && purchaseAmount > 0 ? evaluationAmount - purchaseAmount : null;
+              const profitRate = profitAmount !== null && purchaseAmount > 0 ? (profitAmount / purchaseAmount) * 100 : null;
+              const profitTone = getProfitTone(profitAmount);
+              const displayName = marketNames[market ?? ""] ?? (account.currency === "KRW" ? "원화" : account.currency);
+
+              return (
+                <article className="asset-card" key={`${account.currency}-${account.unit_currency}`}>
+                  <header className="asset-card-header">
+                    <div className="asset-identity">
+                      <div>
+                        <h2>{displayName}</h2>
+                        <strong>({account.currency})</strong>
+                      </div>
+                      {market ? (
+                        <span className="asset-market-icon" title={market}>
+                          <ExternalLink size={32} strokeWidth={2.1} />
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="asset-profit-summary">
+                      <span>평가손익</span>
+                      <strong className={profitTone}>{formatAssetProfit(profitAmount, unitCurrency)}</strong>
+                      <span>수익률</span>
+                      <strong className={profitTone}>{formatAssetProfitRate(profitRate)}</strong>
+                    </div>
+                  </header>
+
+                  <div className="asset-card-divider" />
+
+                  <dl className="asset-metrics">
+                    <div>
+                      <dt>보유수량</dt>
+                      <dd>{formatAssetQuantity(balance, account.currency)}</dd>
+                    </div>
+                    <div>
+                      <dt>매수평균가</dt>
+                      <dd>{formatAssetQuote(avgBuyPrice, unitCurrency)}</dd>
+                    </div>
+                    <div>
+                      <dt>평가금액</dt>
+                      <dd>{formatAssetMoney(evaluationAmount, unitCurrency)}</dd>
+                    </div>
+                    <div>
+                      <dt>매수금액</dt>
+                      <dd>{formatAssetMoney(purchaseAmount, unitCurrency)}</dd>
+                    </div>
+                    {locked > 0 ? (
+                      <div>
+                        <dt>주문 중</dt>
+                        <dd>{formatAssetQuantity(locked, account.currency)}</dd>
+                      </div>
+                    ) : null}
+                  </dl>
+                </article>
+              );
+            })}
           </div>
         ) : null}
       </section>
@@ -294,7 +461,8 @@ function App() {
     return <AssetWindow />;
   }
 
-  const [keys, setKeys] = useState<ApiKeys>({ accessKey: "", secretKey: "" });
+  const [accountLinked, setAccountLinked] = useState(false);
+  const [accountStatus, setAccountStatus] = useState<"checking" | "linked" | "failed">("checking");
   const [market, setMarket] = useState("KRW-BTC");
   const [dryRun, setDryRun] = useState(true);
   const [ticker, setTicker] = useState<Ticker | null>(null);
@@ -306,7 +474,7 @@ function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const lastTradeAtRef = useRef(0);
   const logIdRef = useRef(1);
-  const keysRef = useRef(keys);
+  const accountConnectAttemptedRef = useRef(false);
   const dryRunRef = useRef(dryRun);
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -317,6 +485,8 @@ function App() {
   const [marketTickers, setMarketTickers] = useState<Record<string, Ticker>>({});
   const [marketFilter, setMarketFilter] = useState<MarketFilter>("ALL");
   const [marketSearch, setMarketSearch] = useState("");
+  const [favoriteMarkets, setFavoriteMarkets] = useState<string[]>(loadFavoriteMarkets);
+  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [marketSort, setMarketSort] = useState<{ mode: MarketSortMode; direction: SortDirection }>({
     mode: "price",
     direction: "desc",
@@ -347,7 +517,7 @@ function App() {
     time_in_force: "",
   });
 
-  const isKeyReady = keys.accessKey.trim() !== "" && keys.secretKey.trim() !== "";
+  const isKeyReady = accountLinked;
   const normalizedMarket = market.trim().toUpperCase();
   const selectedMarketInfo = useMemo(
     () => markets.find((item) => item.market === normalizedMarket) ?? null,
@@ -359,25 +529,91 @@ function App() {
   );
   const hasSelectedMarketWarning =
     selectedMarketInfo?.market_warning === "CAUTION" || selectedMarketInfo?.market_event?.warning === true;
+  const favoriteMarketSet = useMemo(() => new Set(favoriteMarkets), [favoriteMarkets]);
+  const emptyMarketMessage = showFavoritesOnly
+    ? favoriteMarkets.length === 0
+      ? "즐겨찾기한 종목이 없습니다."
+      : "조건에 맞는 즐겨찾기 종목이 없습니다."
+    : "조건에 맞는 종목이 없습니다.";
   const toggleMarketSort = useCallback((mode: MarketSortMode) => {
     setMarketSort((current) => ({
       mode,
       direction: current.mode === mode && current.direction === "desc" ? "asc" : "desc",
     }));
   }, []);
+  const toggleMarketFavorite = useCallback((event: MouseEvent<HTMLButtonElement>, marketCode: string) => {
+    event.stopPropagation();
+    setFavoriteMarkets((current) => {
+      if (current.includes(marketCode)) {
+        return current.filter((item) => item !== marketCode);
+      }
+
+      return [...current, marketCode].sort((left, right) => left.localeCompare(right));
+    });
+  }, []);
+  const activeManualOrderPreset = useMemo<ManualOrderPreset | null>(() => {
+    if (manualOrder.ord_type === "limit") {
+      return "limit";
+    }
+
+    if (manualOrder.side === "bid" && manualOrder.ord_type === "price") {
+      return "marketBuy";
+    }
+
+    if (manualOrder.side === "ask" && manualOrder.ord_type === "market") {
+      return "marketSell";
+    }
+
+    return null;
+  }, [manualOrder.ord_type, manualOrder.side]);
+  const applyManualOrderPreset = useCallback(
+    (preset: ManualOrderPreset) => {
+      setManualOrder((current) => {
+        if (preset === "marketBuy") {
+          return {
+            ...current,
+            market: normalizedMarket,
+            side: "bid",
+            volume: "",
+            ord_type: "price",
+            time_in_force: "",
+          };
+        }
+
+        if (preset === "marketSell") {
+          return {
+            ...current,
+            market: normalizedMarket,
+            side: "ask",
+            price: "",
+            ord_type: "market",
+            time_in_force: "",
+          };
+        }
+
+        return {
+          ...current,
+          market: normalizedMarket,
+          ord_type: "limit",
+        };
+      });
+    },
+    [normalizedMarket],
+  );
   const filteredMarkets = useMemo(() => {
     const search = marketSearch.trim().toLowerCase();
 
     const filtered = markets.filter((item) => {
       const quoteCurrency = item.market.split("-")[0];
       const matchesFilter = marketFilter === "ALL" || quoteCurrency === marketFilter;
+      const matchesFavorite = !showFavoritesOnly || favoriteMarketSet.has(item.market);
       const matchesSearch =
         search === "" ||
         item.market.toLowerCase().includes(search) ||
         item.korean_name.toLowerCase().includes(search) ||
         item.english_name.toLowerCase().includes(search);
 
-      return matchesFilter && matchesSearch;
+      return matchesFilter && matchesFavorite && matchesSearch;
     });
 
     return [...filtered].sort((left, right) => {
@@ -401,15 +637,15 @@ function App() {
       const delta = leftValue - rightValue;
       return marketSort.direction === "desc" ? -delta : delta;
     });
-  }, [marketFilter, marketSearch, marketSort, marketTickers, markets]);
-
-  useEffect(() => {
-    keysRef.current = keys;
-  }, [keys]);
+  }, [favoriteMarketSet, marketFilter, marketSearch, marketSort, marketTickers, markets, showFavoritesOnly]);
 
   useEffect(() => {
     dryRunRef.current = dryRun;
   }, [dryRun]);
+
+  useEffect(() => {
+    window.localStorage.setItem(FAVORITE_MARKETS_STORAGE_KEY, JSON.stringify(favoriteMarkets));
+  }, [favoriteMarkets]);
 
   const addLog = useCallback((level: LogEntry["level"], message: string) => {
     const next: LogEntry = {
@@ -420,6 +656,33 @@ function App() {
     };
     setLogs((current) => [next, ...current].slice(0, 80));
   }, []);
+
+  useEffect(() => {
+    if (accountConnectAttemptedRef.current) {
+      return;
+    }
+
+    accountConnectAttemptedRef.current = true;
+
+    const connectAccount = async () => {
+      setAccountStatus("checking");
+      try {
+        const response = await invoke<AssetAccount[]>("connect_upbitkey_account");
+        setAccounts(Array.isArray(response) ? response : []);
+        setAccountLinked(true);
+        setAccountStatus("linked");
+        addLog("info", "연동되었습니다");
+        window.alert("연동되었습니다");
+      } catch (error) {
+        setAccountLinked(false);
+        setAccountStatus("failed");
+        addLog("error", String(error));
+        window.alert("계좌 연동에 실패했습니다");
+      }
+    };
+
+    void connectAccount();
+  }, [addLog]);
 
   const refreshMarkets = useCallback(async () => {
     setMarketsLoading(true);
@@ -527,7 +790,6 @@ function App() {
     async (order: OrderRequest) => {
       const currentDryRun = dryRunRef.current;
       const result = await invoke("place_order", {
-        keys: tauriKeys(keysRef.current),
         order,
         dryRun: currentDryRun,
       });
@@ -552,21 +814,20 @@ function App() {
 
   const refreshPrivateData = useCallback(async () => {
     if (!isKeyReady) {
-      addLog("warn", "잔고 조회에는 API Key가 필요합니다.");
+      addLog("warn", "계좌 API가 연동되지 않았습니다.");
       return;
     }
 
     const [nextAccounts, nextChance] = await Promise.all([
-      invoke("get_accounts", { keys: tauriKeys(keys) }),
+      invoke("get_session_accounts"),
       invoke("get_order_chance", {
-        keys: tauriKeys(keys),
         market: normalizedMarket,
       }),
     ]);
     setAccounts(nextAccounts);
     setChance(nextChance);
     addLog("info", "잔고와 주문 가능정보를 갱신했습니다.");
-  }, [addLog, isKeyReady, keys, normalizedMarket]);
+  }, [addLog, isKeyReady, normalizedMarket]);
 
   const checkStrategy = useCallback(
     async (nextTicker: Ticker) => {
@@ -741,16 +1002,12 @@ function App() {
 
   async function handleOpenAssetWindow() {
     if (!isKeyReady) {
-      addLog("warn", "자산 창을 열려면 API Key가 필요합니다.");
+      addLog("warn", "자산 창을 열려면 계좌 API 연동이 필요합니다.");
       return;
     }
 
     setBusy(true);
     try {
-      await invoke("set_session_api_keys", {
-        keys: tauriKeys(keys),
-      });
-
       const existingWindow = await WebviewWindow.getByLabel(ASSET_WINDOW_LABEL);
       if (existingWindow) {
         await existingWindow.emit("asset-session-updated", null);
@@ -870,6 +1127,15 @@ function App() {
                 {item.label}
               </button>
             ))}
+            <button
+              className={showFavoritesOnly ? "selected" : ""}
+              type="button"
+              aria-pressed={showFavoritesOnly}
+              onClick={() => setShowFavoritesOnly((value) => !value)}
+            >
+              <Star size={14} fill={showFavoritesOnly ? "currentColor" : "none"} />
+              즐겨찾기
+            </button>
           </div>
           <div className="sort-control" aria-label="종목 정렬">
             <button
@@ -890,7 +1156,13 @@ function App() {
             </button>
           </div>
           <div className="market-list-meta">
-            <span>{marketsLoading ? "불러오는 중" : `${filteredMarkets.length} / ${markets.length}개`}</span>
+            <span>
+              {marketsLoading
+                ? "불러오는 중"
+                : showFavoritesOnly
+                  ? `${filteredMarkets.length} / ${favoriteMarkets.length}개 즐겨찾기`
+                  : `${filteredMarkets.length} / ${markets.length}개`}
+            </span>
             <button className="text-button" type="button" disabled={marketsLoading} onClick={refreshMarkets}>
               <RefreshCw size={15} />
               새로고침
@@ -902,32 +1174,43 @@ function App() {
             ) : marketsLoading && markets.length === 0 ? (
               <div className="state-box">마켓 목록을 불러오는 중입니다.</div>
             ) : filteredMarkets.length === 0 ? (
-              <div className="state-box">조건에 맞는 종목이 없습니다.</div>
+              <div className="state-box">{emptyMarketMessage}</div>
             ) : (
               filteredMarkets.map((item) => {
                 const itemTicker = marketTickers[item.market];
+                const isFavorite = favoriteMarketSet.has(item.market);
 
                 return (
-                  <button
-                    className={`market-row ${item.market === normalizedMarket ? "selected" : ""}`}
-                    key={item.market}
-                    type="button"
-                    onClick={() => setMarket(item.market)}
-                  >
-                    <span>
-                      <strong>{item.korean_name}</strong>
-                      <em>{item.english_name}</em>
-                    </span>
-                    <span className="market-row-meta">
-                      <strong className={itemTicker ? (itemTicker.signed_change_price >= 0 ? "up" : "down") : ""}>
-                        {itemTicker ? formatMarketPrice(item.market, itemTicker.trade_price) : "-"}
-                      </strong>
-                      <em className={itemTicker ? (itemTicker.signed_change_price >= 0 ? "up" : "down") : ""}>
-                        {itemTicker ? `${itemTicker.signed_change_rate >= 0 ? "+" : ""}${percentFormat.format(itemTicker.signed_change_rate * 100)}%` : "-"}
-                      </em>
-                      <code>{item.market}</code>
-                    </span>
-                  </button>
+                  <div className="market-row-shell" key={item.market}>
+                    <button
+                      className={`favorite-button ${isFavorite ? "selected" : ""}`}
+                      type="button"
+                      aria-label={`${item.market} 즐겨찾기 ${isFavorite ? "해제" : "추가"}`}
+                      aria-pressed={isFavorite}
+                      onClick={(event) => toggleMarketFavorite(event, item.market)}
+                    >
+                      <Star size={16} fill={isFavorite ? "currentColor" : "none"} />
+                    </button>
+                    <button
+                      className={`market-row ${item.market === normalizedMarket ? "selected" : ""} ${isFavorite ? "favorite" : ""}`}
+                      type="button"
+                      onClick={() => setMarket(item.market)}
+                    >
+                      <span>
+                        <strong>{item.korean_name}</strong>
+                        <em>{item.english_name}</em>
+                      </span>
+                      <span className="market-row-meta">
+                        <strong className={itemTicker ? (itemTicker.signed_change_price >= 0 ? "up" : "down") : ""}>
+                          {itemTicker ? formatMarketPrice(item.market, itemTicker.trade_price) : "-"}
+                        </strong>
+                        <em className={itemTicker ? (itemTicker.signed_change_price >= 0 ? "up" : "down") : ""}>
+                          {itemTicker ? `${itemTicker.signed_change_rate >= 0 ? "+" : ""}${percentFormat.format(itemTicker.signed_change_rate * 100)}%` : "-"}
+                        </em>
+                        <code>{item.market}</code>
+                      </span>
+                    </button>
+                  </div>
                 );
               })
             )}
@@ -980,33 +1263,15 @@ function App() {
         <article className="panel credentials">
           <div className="panel-title">
             <KeyRound size={18} />
-            <h2>API 키</h2>
+            <h2>계좌 API</h2>
           </div>
-          <label>
-            Access Key
-            <input
-              value={keys.accessKey}
-              onChange={(event) => {
-                const value = event.currentTarget.value;
-                setKeys((current) => ({ ...current, accessKey: value }));
-              }}
-              spellCheck={false}
-              autoComplete="off"
-            />
-          </label>
-          <label>
-            Secret Key
-            <input
-              value={keys.secretKey}
-              onChange={(event) => {
-                const value = event.currentTarget.value;
-                setKeys((current) => ({ ...current, secretKey: value }));
-              }}
-              type="password"
-              spellCheck={false}
-              autoComplete="off"
-            />
-          </label>
+          <div className={`state-box account-state ${accountStatus}`}>
+            {accountStatus === "checking"
+              ? "upbitkey 파일을 확인하는 중입니다."
+              : accountStatus === "linked"
+                ? "연동되었습니다"
+                : "계좌 연동에 실패했습니다"}
+          </div>
           <label className="switch">
             <input type="checkbox" checked={dryRun} onChange={(event) => setDryRun(event.currentTarget.checked)} />
             <span>주문 모의 실행</span>
@@ -1020,7 +1285,7 @@ function App() {
             자산 창 열기
           </button>
           <p className="note">
-            키는 화면 상태와 Rust 명령 호출에만 사용되며 파일로 저장하지 않습니다. 실거래 전 Upbit API Key 권한과 허용 IP를 확인하세요.
+            실행 파일과 같은 폴더의 upbitkey 파일에서 Access key와 Secret key를 자동으로 읽습니다.
           </p>
         </article>
 
@@ -1120,6 +1385,35 @@ function App() {
           <div className="panel-title">
             <Send size={18} />
             <h2>수동 주문</h2>
+          </div>
+          <div className="preset-control" aria-label="수동 주문 프리셋">
+            <button
+              className={activeManualOrderPreset === "limit" ? "selected" : ""}
+              type="button"
+              aria-pressed={activeManualOrderPreset === "limit"}
+              onClick={() => applyManualOrderPreset("limit")}
+            >
+              <ListChecks size={15} />
+              지정가
+            </button>
+            <button
+              className={activeManualOrderPreset === "marketBuy" ? "selected" : ""}
+              type="button"
+              aria-pressed={activeManualOrderPreset === "marketBuy"}
+              onClick={() => applyManualOrderPreset("marketBuy")}
+            >
+              <ListChecks size={15} />
+              시장가 매수
+            </button>
+            <button
+              className={activeManualOrderPreset === "marketSell" ? "selected" : ""}
+              type="button"
+              aria-pressed={activeManualOrderPreset === "marketSell"}
+              onClick={() => applyManualOrderPreset("marketSell")}
+            >
+              <ListChecks size={15} />
+              시장가 매도
+            </button>
           </div>
           <div className="form-grid">
             <label>

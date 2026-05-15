@@ -23,6 +23,7 @@ body {
 }
 
 body.asset-window-body {
+  background: #07111d;
   min-width: 0;
 }
 
@@ -238,7 +239,8 @@ h2 {
 
 .segmented-control,
 .sort-control,
-.timeframe-buttons {
+.timeframe-buttons,
+.preset-control {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -246,7 +248,8 @@ h2 {
 
 .segmented-control button,
 .sort-control button,
-.timeframe-buttons button {
+.timeframe-buttons button,
+.preset-control button {
   background: #edf4f6;
   border: 1px solid #cfe0e5;
   border-radius: 6px;
@@ -259,7 +262,8 @@ h2 {
 
 .segmented-control button.selected,
 .sort-control button.selected,
-.timeframe-buttons button.selected {
+.timeframe-buttons button.selected,
+.preset-control button.selected {
   background: #1f7a8c;
   border-color: #1f7a8c;
   color: #ffffff;
@@ -306,6 +310,32 @@ h2 {
   padding: 8px;
 }
 
+.market-row-shell {
+  align-items: stretch;
+  display: flex;
+  gap: 6px;
+}
+
+.favorite-button {
+  background: #ffffff;
+  border: 1px solid #e1e8ed;
+  border-radius: 6px;
+  color: #7f8d97;
+  flex: 0 0 34px;
+  min-height: 100%;
+  padding: 0;
+}
+
+.favorite-button:hover,
+.favorite-button.selected {
+  border-color: #d5962d;
+  color: #b17417;
+}
+
+.favorite-button.selected {
+  background: #fff7e8;
+}
+
 .market-row {
   align-items: center;
   background: #ffffff;
@@ -319,6 +349,11 @@ h2 {
   padding: 7px 9px;
   text-align: left;
   width: 100%;
+}
+
+.market-row.favorite:not(.selected) {
+  background: #fffdf7;
+  border-color: #eadbb8;
 }
 
 .market-row:hover,
@@ -426,6 +461,16 @@ h2 {
 
 .chart-state.error,
 .state-box.error {
+  background: #fff1f1;
+  color: #a52c2c;
+}
+
+.account-state.linked {
+  background: #e4f5eb;
+  color: #176b3a;
+}
+
+.account-state.failed {
   background: #fff1f1;
   color: #a52c2c;
 }
@@ -577,61 +622,187 @@ h2 {
 }
 
 .asset-shell {
+  background: #07111d;
   display: grid;
   gap: 14px;
   min-height: 100vh;
-  padding: 16px;
+  padding: 18px;
 }
 
 .asset-header {
   align-items: center;
+  background: #0d1826;
+  border-color: #203247;
+  box-shadow: none;
+  color: #dbe2ec;
   display: flex;
   justify-content: space-between;
 }
 
+.asset-header h1 {
+  color: #f2f5fa;
+}
+
 .asset-panel {
   align-content: start;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  gap: 12px;
+  padding: 0;
 }
 
-.asset-table-wrap {
-  border: 1px solid #dce4ea;
-  border-radius: 6px;
-  overflow: auto;
-}
-
-.asset-table {
-  border-collapse: collapse;
-  min-width: 680px;
-  width: 100%;
-}
-
-.asset-table th,
-.asset-table td {
-  border-bottom: 1px solid #e6edf2;
+.asset-quote-warning {
+  background: #251d12;
+  border: 1px solid #7c5a28;
+  border-radius: 8px;
+  color: #f5c879;
+  font-size: 0.86rem;
+  font-weight: 750;
   padding: 10px 12px;
+}
+
+.asset-card-list {
+  display: grid;
+  gap: 14px;
+}
+
+.asset-card {
+  background: #081421;
+  border: 1px solid #192638;
+  border-radius: 0;
+  color: #d6dce5;
+  display: grid;
+  gap: 20px;
+  padding: 28px 36px;
+}
+
+.asset-card-header {
+  align-items: start;
+  display: grid;
+  gap: 28px;
+  grid-template-columns: minmax(220px, 1fr) minmax(240px, 0.72fr);
+}
+
+.asset-identity {
+  align-items: start;
+  display: flex;
+  gap: 28px;
+  min-width: 0;
+}
+
+.asset-identity h2 {
+  color: #d7dde6;
+  font-size: clamp(1.75rem, 5vw, 2.55rem);
+  font-weight: 850;
+  letter-spacing: 0;
+  line-height: 1.08;
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}
+
+.asset-identity strong {
+  color: #d7dde6;
+  display: block;
+  font-size: clamp(1.75rem, 5vw, 2.55rem);
+  font-weight: 850;
+  letter-spacing: 0;
+  line-height: 1.08;
+  overflow-wrap: anywhere;
+}
+
+.asset-market-icon {
+  color: #d7dde6;
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.asset-profit-summary {
+  align-items: baseline;
+  display: grid;
+  gap: 18px 18px;
+  grid-template-columns: minmax(90px, 1fr) auto;
+  justify-self: end;
+  min-width: 0;
+  width: min(520px, 100%);
+}
+
+.asset-profit-summary span {
+  color: #d7dde6;
+  font-size: clamp(1.45rem, 4vw, 2.3rem);
+  font-weight: 650;
+  line-height: 1.1;
+}
+
+.asset-profit-summary strong {
+  color: #d7dde6;
+  font-size: clamp(1.6rem, 4.5vw, 2.65rem);
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.05;
   text-align: right;
   white-space: nowrap;
 }
 
-.asset-table th {
-  background: #f6f9fb;
-  color: #4d5c66;
-  font-size: 0.78rem;
-  font-weight: 800;
+.asset-profit-summary strong.up {
+  color: #ef5b5b;
 }
 
-.asset-table th:first-child,
-.asset-table td:first-child {
-  text-align: left;
+.asset-profit-summary strong.down {
+  color: #4d7fee;
 }
 
-.asset-table tbody tr:last-child td {
-  border-bottom: 0;
+.asset-profit-summary strong.flat {
+  color: #8d96a6;
 }
 
-.asset-currency {
-  color: #155f6f;
-  font-weight: 850;
+.asset-card-divider {
+  background: #1c2838;
+  height: 2px;
+  width: 100%;
+}
+
+.asset-metrics {
+  display: grid;
+  gap: 28px 52px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.asset-metrics div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.asset-metrics div:nth-child(odd) {
+  justify-items: center;
+  text-align: center;
+}
+
+.asset-metrics div:nth-child(even) {
+  justify-items: end;
+  text-align: right;
+}
+
+.asset-metrics dt {
+  color: #687180;
+  font-size: clamp(1.3rem, 3vw, 2rem);
+  font-weight: 650;
+  line-height: 1.1;
+  order: 2;
+}
+
+.asset-metrics dd {
+  color: #d7dde6;
+  font-size: clamp(1.55rem, 4vw, 2.7rem);
+  font-weight: 650;
+  letter-spacing: 0;
+  line-height: 1.12;
+  margin: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 1100px) {
@@ -654,5 +825,39 @@ h2 {
 
   .app-shell {
     padding: 14px;
+  }
+}
+
+@media (max-width: 760px) {
+  .asset-shell {
+    padding: 12px;
+  }
+
+  .asset-header {
+    align-items: stretch;
+    display: grid;
+    gap: 12px;
+  }
+
+  .asset-card {
+    gap: 16px;
+    padding: 22px 18px;
+  }
+
+  .asset-card-header,
+  .asset-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .asset-profit-summary {
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .asset-metrics div,
+  .asset-metrics div:nth-child(odd),
+  .asset-metrics div:nth-child(even) {
+    justify-items: stretch;
+    text-align: left;
   }
 }
