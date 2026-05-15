@@ -17,6 +17,7 @@ import {
   KeyRound,
   Play,
   RefreshCw,
+  RotateCcw,
   Send,
   ShieldCheck,
   Square,
@@ -97,6 +98,31 @@ type MarketFilter = "KRW" | "BTC" | "USDT" | "ALL";
 type MarketSortMode = "price" | "changeRate";
 type SortDirection = "desc" | "asc";
 
+type StrategySettings = {
+  intervalSec: string;
+  buyBelow: string;
+  buyKrw: string;
+  sellAbove: string;
+  sellVolume: string;
+  cooldownSec: string;
+};
+
+type MarketSort = {
+  mode: MarketSortMode;
+  direction: SortDirection;
+};
+
+type UserPreferences = {
+  market: string;
+  dryRun: boolean;
+  marketFilter: MarketFilter;
+  marketSearch: string;
+  marketSort: MarketSort;
+  chartTimeframe: ChartTimeframe;
+  strategy: StrategySettings;
+  manualOrder: OrderRequest;
+};
+
 type LogEntry = {
   id: number;
   level: "info" | "warn" | "error";
@@ -135,6 +161,38 @@ const percentFormat = new Intl.NumberFormat("ko-KR", {
 const ASSET_WINDOW_LABEL = "asset";
 const CHART_AUTO_REFRESH_MS = 15_000;
 const MARKET_TICKER_REFRESH_MS = 10_000;
+const USER_PREFERENCES_STORAGE_KEY = "autobo.userPreferences.v1";
+const defaultStrategy: StrategySettings = {
+  intervalSec: "10",
+  buyBelow: "",
+  buyKrw: "10000",
+  sellAbove: "",
+  sellVolume: "",
+  cooldownSec: "60",
+};
+const defaultManualOrder: OrderRequest = {
+  market: "KRW-BTC",
+  side: "bid",
+  volume: "",
+  price: "",
+  ord_type: "limit",
+  identifier: "",
+  time_in_force: "",
+};
+const defaultMarketSort: MarketSort = {
+  mode: "price",
+  direction: "desc",
+};
+const defaultUserPreferences: UserPreferences = {
+  market: "KRW-BTC",
+  dryRun: true,
+  marketFilter: "ALL",
+  marketSearch: "",
+  marketSort: defaultMarketSort,
+  chartTimeframe: "5m",
+  strategy: defaultStrategy,
+  manualOrder: defaultManualOrder,
+};
 
 function tauriKeys(keys: ApiKeys) {
   return {
@@ -157,6 +215,114 @@ function nowText() {
 
 function isMarketCode(value: string) {
   return /^[A-Z]+-[A-Z0-9]+$/.test(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isMarketFilter(value: unknown): value is MarketFilter {
+  return marketFilters.some((item) => item.value === value);
+}
+
+function isChartTimeframe(value: unknown): value is ChartTimeframe {
+  return chartTimeframes.some((item) => item.value === value);
+}
+
+function isMarketSortMode(value: unknown): value is MarketSortMode {
+  return value === "price" || value === "changeRate";
+}
+
+function isSortDirection(value: unknown): value is SortDirection {
+  return value === "desc" || value === "asc";
+}
+
+function isOrderSide(value: unknown): value is OrderRequest["side"] {
+  return value === "bid" || value === "ask";
+}
+
+function isOrderType(value: unknown): value is OrderRequest["ord_type"] {
+  return value === "limit" || value === "price" || value === "market" || value === "best";
+}
+
+function stringValue(value: unknown, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
+function loadUserPreferences(): UserPreferences {
+  if (typeof window === "undefined") {
+    return defaultUserPreferences;
+  }
+
+  try {
+    const stored = window.localStorage.getItem(USER_PREFERENCES_STORAGE_KEY);
+    if (!stored) {
+      return defaultUserPreferences;
+    }
+
+    const parsed: unknown = JSON.parse(stored);
+    if (!isRecord(parsed)) {
+      return defaultUserPreferences;
+    }
+
+    const strategy = isRecord(parsed.strategy) ? parsed.strategy : {};
+    const manualOrder = isRecord(parsed.manualOrder) ? parsed.manualOrder : {};
+    const marketSort = isRecord(parsed.marketSort) ? parsed.marketSort : {};
+    const market = stringValue(parsed.market, defaultUserPreferences.market).trim().toUpperCase();
+
+    return {
+      market: isMarketCode(market) ? market : defaultUserPreferences.market,
+      dryRun: typeof parsed.dryRun === "boolean" ? parsed.dryRun : defaultUserPreferences.dryRun,
+      marketFilter: isMarketFilter(parsed.marketFilter) ? parsed.marketFilter : defaultUserPreferences.marketFilter,
+      marketSearch: stringValue(parsed.marketSearch),
+      marketSort: {
+        mode: isMarketSortMode(marketSort.mode) ? marketSort.mode : defaultUserPreferences.marketSort.mode,
+        direction: isSortDirection(marketSort.direction)
+          ? marketSort.direction
+          : defaultUserPreferences.marketSort.direction,
+      },
+      chartTimeframe: isChartTimeframe(parsed.chartTimeframe)
+        ? parsed.chartTimeframe
+        : defaultUserPreferences.chartTimeframe,
+      strategy: {
+        intervalSec: stringValue(strategy.intervalSec, defaultStrategy.intervalSec),
+        buyBelow: stringValue(strategy.buyBelow),
+        buyKrw: stringValue(strategy.buyKrw, defaultStrategy.buyKrw),
+        sellAbove: stringValue(strategy.sellAbove),
+        sellVolume: stringValue(strategy.sellVolume),
+        cooldownSec: stringValue(strategy.cooldownSec, defaultStrategy.cooldownSec),
+      },
+      manualOrder: {
+        market: isMarketCode(stringValue(manualOrder.market).trim().toUpperCase())
+          ? stringValue(manualOrder.market).trim().toUpperCase()
+          : defaultManualOrder.market,
+        side: isOrderSide(manualOrder.side) ? manualOrder.side : defaultManualOrder.side,
+        volume: stringValue(manualOrder.volume),
+        price: stringValue(manualOrder.price),
+        ord_type: isOrderType(manualOrder.ord_type) ? manualOrder.ord_type : defaultManualOrder.ord_type,
+        identifier: stringValue(manualOrder.identifier),
+        time_in_force: stringValue(manualOrder.time_in_force),
+      },
+    };
+  } catch {
+    return defaultUserPreferences;
+  }
+}
+
+function saveUserPreferences(preferences: UserPreferences) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(USER_PREFERENCES_STORAGE_KEY, JSON.stringify(preferences));
+}
+
+function clearUserPreferences() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.removeItem(USER_PREFERENCES_STORAGE_KEY);
 }
 
 function toChartCandle(candle: CandleApiResponse): ChartCandle | null {
@@ -294,9 +460,10 @@ function App() {
     return <AssetWindow />;
   }
 
+  const [initialPreferences] = useState(loadUserPreferences);
   const [keys, setKeys] = useState<ApiKeys>({ accessKey: "", secretKey: "" });
-  const [market, setMarket] = useState("KRW-BTC");
-  const [dryRun, setDryRun] = useState(true);
+  const [market, setMarket] = useState(initialPreferences.market);
+  const [dryRun, setDryRun] = useState(initialPreferences.dryRun);
   const [ticker, setTicker] = useState<Ticker | null>(null);
   const [accounts, setAccounts] = useState<unknown>(null);
   const [chance, setChance] = useState<unknown>(null);
@@ -315,37 +482,19 @@ function App() {
   const marketTickerRefreshInFlightRef = useRef(false);
   const [markets, setMarkets] = useState<MarketInfo[]>([]);
   const [marketTickers, setMarketTickers] = useState<Record<string, Ticker>>({});
-  const [marketFilter, setMarketFilter] = useState<MarketFilter>("ALL");
-  const [marketSearch, setMarketSearch] = useState("");
-  const [marketSort, setMarketSort] = useState<{ mode: MarketSortMode; direction: SortDirection }>({
-    mode: "price",
-    direction: "desc",
-  });
+  const [marketFilter, setMarketFilter] = useState<MarketFilter>(initialPreferences.marketFilter);
+  const [marketSearch, setMarketSearch] = useState(initialPreferences.marketSearch);
+  const [marketSort, setMarketSort] = useState<MarketSort>(initialPreferences.marketSort);
   const [marketsLoading, setMarketsLoading] = useState(false);
   const [marketsError, setMarketsError] = useState<string | null>(null);
-  const [chartTimeframe, setChartTimeframe] = useState<ChartTimeframe>("5m");
+  const [chartTimeframe, setChartTimeframe] = useState<ChartTimeframe>(initialPreferences.chartTimeframe);
   const [candles, setCandles] = useState<ChartCandle[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState<string | null>(null);
 
-  const [strategy, setStrategy] = useState({
-    intervalSec: "10",
-    buyBelow: "",
-    buyKrw: "10000",
-    sellAbove: "",
-    sellVolume: "",
-    cooldownSec: "60",
-  });
+  const [strategy, setStrategy] = useState<StrategySettings>(initialPreferences.strategy);
 
-  const [manualOrder, setManualOrder] = useState<OrderRequest>({
-    market: "KRW-BTC",
-    side: "bid",
-    volume: "",
-    price: "",
-    ord_type: "limit",
-    identifier: "",
-    time_in_force: "",
-  });
+  const [manualOrder, setManualOrder] = useState<OrderRequest>(initialPreferences.manualOrder);
 
   const isKeyReady = keys.accessKey.trim() !== "" && keys.secretKey.trim() !== "";
   const normalizedMarket = market.trim().toUpperCase();
@@ -410,6 +559,22 @@ function App() {
   useEffect(() => {
     dryRunRef.current = dryRun;
   }, [dryRun]);
+
+  useEffect(() => {
+    saveUserPreferences({
+      market: normalizedMarket,
+      dryRun,
+      marketFilter,
+      marketSearch,
+      marketSort,
+      chartTimeframe,
+      strategy,
+      manualOrder: {
+        ...manualOrder,
+        market: manualOrder.market.trim().toUpperCase(),
+      },
+    });
+  }, [chartTimeframe, dryRun, manualOrder, marketFilter, marketSearch, marketSort, normalizedMarket, strategy]);
 
   const addLog = useCallback((level: LogEntry["level"], message: string) => {
     const next: LogEntry = {
@@ -779,6 +944,19 @@ function App() {
     }
   }
 
+  function handleResetUserPreferences() {
+    clearUserPreferences();
+    setMarket(defaultUserPreferences.market);
+    setDryRun(defaultUserPreferences.dryRun);
+    setMarketFilter(defaultUserPreferences.marketFilter);
+    setMarketSearch(defaultUserPreferences.marketSearch);
+    setMarketSort({ ...defaultUserPreferences.marketSort });
+    setChartTimeframe(defaultUserPreferences.chartTimeframe);
+    setStrategy({ ...defaultUserPreferences.strategy });
+    setManualOrder({ ...defaultUserPreferences.manualOrder });
+    addLog("info", "화면 설정을 기본값으로 초기화했습니다.");
+  }
+
   async function handleManualOrder() {
     setBusy(true);
     try {
@@ -1019,8 +1197,12 @@ function App() {
             <Wallet size={17} />
             자산 창 열기
           </button>
+          <button className="subtle-button" type="button" onClick={handleResetUserPreferences}>
+            <RotateCcw size={16} />
+            화면 설정 초기화
+          </button>
           <p className="note">
-            키는 화면 상태와 Rust 명령 호출에만 사용되며 파일로 저장하지 않습니다. 실거래 전 Upbit API Key 권한과 허용 IP를 확인하세요.
+            API 키는 저장하지 않습니다. 마켓, 차트, 전략, 주문 입력값만 이 기기에 자동 저장됩니다.
           </p>
         </article>
 
