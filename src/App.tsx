@@ -14,6 +14,7 @@ import {
   Activity,
   AlertTriangle,
   BarChart3,
+  Calculator,
   ExternalLink,
   KeyRound,
   ListChecks,
@@ -157,6 +158,7 @@ const percentFormat = new Intl.NumberFormat("ko-KR", {
   maximumFractionDigits: 2,
   minimumFractionDigits: 2,
 });
+const orderAmountPresets = [10_000, 50_000, 100_000];
 const ASSET_WINDOW_LABEL = "asset";
 const CHART_AUTO_REFRESH_MS = 15_000;
 const MARKET_TICKER_REFRESH_MS = 10_000;
@@ -369,6 +371,29 @@ function formatMarketPrice(market: string, price: number) {
   });
 
   return `${formattedPrice} ${quoteCurrency}`;
+}
+
+function parsePositiveOrderNumber(value: string | null | undefined) {
+  const numberValue = Number(String(value ?? "").replace(/,/g, "").trim());
+  return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : null;
+}
+
+function toOrderInputNumber(value: number, maximumFractionDigits = 8) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "";
+  }
+
+  return value.toFixed(maximumFractionDigits).replace(/\.?0+$/, "");
+}
+
+function formatOrderQuote(value: number | null, quoteCurrency: string) {
+  if (value === null || !Number.isFinite(value)) {
+    return "-";
+  }
+
+  return `${value.toLocaleString("ko-KR", {
+    maximumFractionDigits: quoteCurrency === "KRW" ? 0 : 8,
+  })} ${quoteCurrency}`;
 }
 
 function parseAssetAmount(value: string) {
@@ -679,6 +704,16 @@ function App() {
   const hasSelectedMarketWarning =
     selectedMarketInfo?.market_warning === "CAUTION" || selectedMarketInfo?.market_event?.warning === true;
   const favoriteMarketSet = useMemo(() => new Set(favoriteMarkets), [favoriteMarkets]);
+  const [quoteCurrency, baseCurrency = ""] = normalizedMarket.split("-");
+  const currentTradePrice =
+    ticker?.market === normalizedMarket ? ticker.trade_price : marketTickers[normalizedMarket]?.trade_price ?? null;
+  const manualOrderNumbers = useMemo(
+    () => ({
+      price: parsePositiveOrderNumber(manualOrder.price),
+      volume: parsePositiveOrderNumber(manualOrder.volume),
+    }),
+    [manualOrder.price, manualOrder.volume],
+  );
   const emptyMarketMessage = showFavoritesOnly
     ? favoriteMarkets.length === 0
       ? "즐겨찾기한 종목이 없습니다."
@@ -749,6 +784,112 @@ function App() {
     },
     [normalizedMarket],
   );
+  const applyCurrentPriceToManualOrder = useCallback(() => {
+    if (!currentTradePrice) {
+      return;
+    }
+
+    setManualOrder((current) => ({
+      ...current,
+      market: normalizedMarket,
+      price: toOrderInputNumber(currentTradePrice, quoteCurrency === "KRW" ? 0 : 8),
+    }));
+  }, [currentTradePrice, normalizedMarket, quoteCurrency]);
+  const applyManualOrderAmountPreset = useCallback(
+    (amount: number) => {
+      const fallbackPrice = manualOrderNumbers.price ?? currentTradePrice;
+
+      setManualOrder((current) => {
+        if (current.ord_type === "price") {
+          return {
+            ...current,
+            market: normalizedMarket,
+            price: String(amount),
+            volume: "",
+          };
+        }
+
+        if (current.ord_type === "market" && current.side === "ask" && fallbackPrice) {
+          return {
+            ...current,
+            market: normalizedMarket,
+            volume: toOrderInputNumber(amount / fallbackPrice),
+          };
+        }
+
+        if (fallbackPrice) {
+          return {
+            ...current,
+            market: normalizedMarket,
+            price: current.price?.trim()
+              ? current.price
+              : toOrderInputNumber(fallbackPrice, quoteCurrency === "KRW" ? 0 : 8),
+            volume: toOrderInputNumber(amount / fallbackPrice),
+          };
+        }
+
+        return current;
+      });
+    },
+    [currentTradePrice, manualOrderNumbers.price, normalizedMarket, quoteCurrency],
+  );
+  const manualOrderEstimate = useMemo(() => {
+    if (manualOrder.ord_type === "price") {
+      return manualOrderNumbers.price;
+    }
+
+    if (manualOrder.ord_type === "limit" && manualOrderNumbers.price && manualOrderNumbers.volume) {
+      return manualOrderNumbers.price * manualOrderNumbers.volume;
+    }
+
+    if (manualOrder.ord_type === "market" && manualOrderNumbers.volume && currentTradePrice) {
+      return manualOrderNumbers.volume * currentTradePrice;
+    }
+
+    return null;
+  }, [currentTradePrice, manualOrder.ord_type, manualOrderNumbers.price, manualOrderNumbers.volume]);
+  const manualOrderCheck = useMemo(() => {
+    const orderMarket = manualOrder.market.trim().toUpperCase();
+
+    if (!isMarketCode(orderMarket)) {
+      return { tone: "warn" as const, message: "마켓 코드를 확인하세요. 예: KRW-BTC" };
+    }
+
+    if (manualOrder.ord_type === "limit") {
+      if (!manualOrderNumbers.price || !manualOrderNumbers.volume) {
+        return { tone: "warn" as const, message: "지정가 주문은 가격과 수량을 모두 입력해야 합니다." };
+      }
+
+      return { tone: "ok" as const, message: "지정가 주문 입력이 전송 가능한 상태입니다." };
+    }
+
+    if (manualOrder.ord_type === "price") {
+      if (manualOrder.side !== "bid") {
+        return { tone: "warn" as const, message: "시장가 매수는 side=bid와 ord_type=price 조합을 사용하세요." };
+      }
+
+      if (!manualOrderNumbers.price) {
+        return { tone: "warn" as const, message: "시장가 매수는 매수 금액을 입력해야 합니다." };
+      }
+
+      return { tone: "ok" as const, message: "시장가 매수 입력이 전송 가능한 상태입니다." };
+    }
+
+    if (manualOrder.ord_type === "market") {
+      if (manualOrder.side !== "ask") {
+        return { tone: "warn" as const, message: "시장가 매도는 side=ask와 ord_type=market 조합을 사용하세요." };
+      }
+
+      if (!manualOrderNumbers.volume) {
+        return { tone: "warn" as const, message: "시장가 매도는 매도 수량을 입력해야 합니다." };
+      }
+
+      return { tone: "ok" as const, message: "시장가 매도 입력이 전송 가능한 상태입니다." };
+    }
+
+    return { tone: "ok" as const, message: "최유리 주문은 Upbit 조건을 한 번 더 확인하세요." };
+  }, [manualOrder.market, manualOrder.ord_type, manualOrder.side, manualOrderNumbers.price, manualOrderNumbers.volume]);
+  const canSubmitManualOrder = manualOrderCheck.tone === "ok" && !busy && (dryRun || isKeyReady);
   const filteredMarkets = useMemo(() => {
     const search = marketSearch.trim().toLowerCase();
 
@@ -1215,6 +1356,11 @@ function App() {
   }
 
   async function handleManualOrder() {
+    if (manualOrderCheck.tone !== "ok") {
+      addLog("warn", manualOrderCheck.message);
+      return;
+    }
+
     setBusy(true);
     try {
       await invokeOrder({
@@ -1677,7 +1823,50 @@ function App() {
               </select>
             </label>
           </div>
-          <button className="primary-button" type="button" disabled={busy || (!dryRun && !isKeyReady)} onClick={handleManualOrder}>
+          <div className="order-assist">
+            <div className="order-assist-header">
+              <span>
+                <Calculator size={16} />
+                주문 도우미
+              </span>
+              <button className="text-button" type="button" disabled={!currentTradePrice} onClick={applyCurrentPriceToManualOrder}>
+                현재가 입력
+              </button>
+            </div>
+            <div className="quick-amounts" aria-label="주문 금액 빠른 계산">
+              {orderAmountPresets.map((amount) => (
+                <button
+                  className="subtle-button"
+                  key={amount}
+                  type="button"
+                  disabled={manualOrder.ord_type !== "price" && !manualOrderNumbers.price && !currentTradePrice}
+                  onClick={() => applyManualOrderAmountPreset(amount)}
+                >
+                  {numberFormat.format(amount)} KRW
+                </button>
+              ))}
+            </div>
+            <dl className="order-summary">
+              <div>
+                <dt>마켓</dt>
+                <dd>{normalizedMarket}</dd>
+              </div>
+              <div>
+                <dt>현재가</dt>
+                <dd>{currentTradePrice ? formatOrderQuote(currentTradePrice, quoteCurrency) : "-"}</dd>
+              </div>
+              <div>
+                <dt>예상 주문액</dt>
+                <dd>{formatOrderQuote(manualOrderEstimate, quoteCurrency)}</dd>
+              </div>
+              <div>
+                <dt>기준 자산</dt>
+                <dd>{baseCurrency || "-"}</dd>
+              </div>
+            </dl>
+            <div className={`order-check ${manualOrderCheck.tone}`}>{manualOrderCheck.message}</div>
+          </div>
+          <button className="primary-button" type="button" disabled={!canSubmitManualOrder} onClick={handleManualOrder}>
             <Send size={17} />
             주문 전송
           </button>

@@ -269,6 +269,86 @@ h2 {
   color: #ffffff;
 }
 
+.order-assist {
+  background: #f6f9fb;
+  border: 1px solid #dce4ea;
+  border-radius: 6px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.order-assist-header,
+.order-assist-header span,
+.quick-amounts {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.order-assist-header {
+  justify-content: space-between;
+}
+
+.order-assist-header span {
+  color: #1f7a8c;
+  font-size: 0.84rem;
+  font-weight: 850;
+}
+
+.quick-amounts {
+  flex-wrap: wrap;
+}
+
+.quick-amounts .subtle-button {
+  background: #ffffff;
+  min-height: 34px;
+}
+
+.order-summary {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.order-summary div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.order-summary dt {
+  color: #697983;
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.order-summary dd {
+  color: #172026;
+  font-size: 0.86rem;
+  font-weight: 800;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.order-check {
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 800;
+  padding: 8px 10px;
+}
+
+.order-check.ok {
+  background: #e4f5eb;
+  color: #176b3a;
+}
+
+.order-check.warn {
+  background: #fff4df;
+  color: #8a5b05;
+}
+
 .market-list-meta,
 .chart-toolbar,
 .chart-heading-meta {
