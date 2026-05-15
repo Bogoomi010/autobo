@@ -298,6 +298,22 @@ h2 {
   padding: 4px 0;
 }
 
+.subtle-button {
+  background: transparent;
+  border: 1px solid #d5e0e7;
+  border-radius: 6px;
+  color: #51616b;
+  font-size: 0.82rem;
+  font-weight: 800;
+  min-height: 38px;
+  padding: 8px 10px;
+}
+
+.subtle-button:hover {
+  border-color: #9fb2bd;
+  color: #172026;
+}
+
 .market-list {
   align-content: start;
   border: 1px solid #dce4ea;
