@@ -14,6 +14,7 @@ import {
   Activity,
   AlertTriangle,
   BarChart3,
+  Calculator,
   ExternalLink,
   KeyRound,
   ListChecks,
@@ -127,6 +128,18 @@ type LogEntry = {
   level: "info" | "warn" | "error";
   message: string;
   at: string;
+};
+
+type ReviewRow = {
+  label: string;
+  value: string;
+};
+
+type ManualOrderReview = {
+  title: string;
+  rows: ReviewRow[];
+  errors: string[];
+  warnings: string[];
 };
 
 const marketFilters: { value: MarketFilter; label: string }[] = [
@@ -369,6 +382,141 @@ function formatMarketPrice(market: string, price: number) {
   });
 
   return `${formattedPrice} ${quoteCurrency}`;
+}
+
+function parsePositiveNumber(value: string | null | undefined) {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : null;
+}
+
+function formatOrderNumber(value: number, maximumFractionDigits = 8) {
+  return value.toLocaleString("ko-KR", {
+    maximumFractionDigits,
+  });
+}
+
+function getOrderTypeLabel(order: OrderRequest) {
+  if (order.ord_type === "limit") {
+    return order.side === "bid" ? "지정가 매수" : "지정가 매도";
+  }
+
+  if (order.side === "bid" && order.ord_type === "price") {
+    return "시장가 매수";
+  }
+
+  if (order.side === "ask" && order.ord_type === "market") {
+    return "시장가 매도";
+  }
+
+  if (order.ord_type === "best") {
+    return order.side === "bid" ? "최유리 매수" : "최유리 매도";
+  }
+
+  return `${order.side}/${order.ord_type}`;
+}
+
+function buildManualOrderReview(
+  order: OrderRequest,
+  dryRun: boolean,
+  ticker: Ticker | null,
+  marketInfo: MarketInfo | null,
+): ManualOrderReview {
+  const orderMarket = order.market.trim().toUpperCase();
+  const quoteCurrency = orderMarket.split("-")[0] || "KRW";
+  const price = parsePositiveNumber(order.price);
+  const volume = parsePositiveNumber(order.volume);
+  const hasPriceInput = (order.price ?? "").trim() !== "";
+  const hasVolumeInput = (order.volume ?? "").trim() !== "";
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const rows: ReviewRow[] = [
+    { label: "실행 모드", value: dryRun ? "모의 주문" : "실거래 주문" },
+    {
+      label: "종목",
+      value: marketInfo ? `${marketInfo.korean_name} (${orderMarket})` : orderMarket || "-",
+    },
+    { label: "주문 유형", value: getOrderTypeLabel(order) },
+  ];
+
+  if (!isMarketCode(orderMarket)) {
+    errors.push("마켓 코드를 확인하세요. 예: KRW-BTC");
+  }
+
+  if (order.side === "ask" && order.ord_type === "price") {
+    errors.push("시장가 매수(price)는 bid 매수에서만 사용할 수 있습니다.");
+  }
+
+  if (order.side === "bid" && order.ord_type === "market") {
+    errors.push("시장가 매도(market)는 ask 매도에서만 사용할 수 있습니다.");
+  }
+
+  if (order.ord_type === "limit") {
+    if (price === null) {
+      errors.push("지정가 주문은 0보다 큰 가격이 필요합니다.");
+    }
+
+    if (volume === null) {
+      errors.push("지정가 주문은 0보다 큰 수량이 필요합니다.");
+    }
+
+    if (price !== null) {
+      rows.push({ label: "지정 가격", value: `${formatOrderNumber(price)} ${quoteCurrency}` });
+    }
+
+    if (volume !== null) {
+      rows.push({ label: "주문 수량", value: formatOrderNumber(volume) });
+    }
+
+    if (price !== null && volume !== null) {
+      rows.push({
+        label: "예상 주문금액",
+        value: `${formatOrderNumber(price * volume, quoteCurrency === "KRW" ? 0 : 8)} ${quoteCurrency}`,
+      });
+    }
+  }
+
+  if (order.side === "bid" && order.ord_type === "price") {
+    if (price === null) {
+      errors.push("시장가 매수는 0보다 큰 매수금액이 필요합니다.");
+    } else {
+      rows.push({ label: "매수금액", value: `${formatOrderNumber(price, quoteCurrency === "KRW" ? 0 : 8)} ${quoteCurrency}` });
+    }
+
+    if (hasVolumeInput) {
+      warnings.push("시장가 매수에서는 수량 입력값을 전송하지 않습니다.");
+    }
+  }
+
+  if (order.side === "ask" && order.ord_type === "market") {
+    if (volume === null) {
+      errors.push("시장가 매도는 0보다 큰 수량이 필요합니다.");
+    } else {
+      rows.push({ label: "매도 수량", value: formatOrderNumber(volume) });
+    }
+
+    if (hasPriceInput) {
+      warnings.push("시장가 매도에서는 가격/매수금액 입력값을 전송하지 않습니다.");
+    }
+  }
+
+  if (order.ord_type === "best") {
+    warnings.push("최유리 주문은 거래소 규칙과 계좌 상태에 따라 추가 거절될 수 있습니다.");
+  }
+
+  if (ticker) {
+    rows.push({ label: "현재가", value: formatMarketPrice(ticker.market, ticker.trade_price) });
+  }
+
+  if (!dryRun) {
+    warnings.push("실거래 주문입니다. 전송 전 종목, 방향, 수량과 금액을 다시 확인하세요.");
+  }
+
+  return {
+    title: errors.length > 0 ? "입력 확인 필요" : "전송 가능",
+    rows,
+    errors,
+    warnings,
+  };
 }
 
 function parseAssetAmount(value: string) {
@@ -678,6 +826,11 @@ function App() {
   );
   const hasSelectedMarketWarning =
     selectedMarketInfo?.market_warning === "CAUTION" || selectedMarketInfo?.market_event?.warning === true;
+  const manualOrderReview = useMemo(
+    () => buildManualOrderReview(manualOrder, dryRun, ticker, selectedMarketInfo),
+    [dryRun, manualOrder, selectedMarketInfo, ticker],
+  );
+  const hasManualOrderErrors = manualOrderReview.errors.length > 0;
   const favoriteMarketSet = useMemo(() => new Set(favoriteMarkets), [favoriteMarkets]);
   const emptyMarketMessage = showFavoritesOnly
     ? favoriteMarkets.length === 0
@@ -821,6 +974,18 @@ function App() {
     };
     setLogs((current) => [next, ...current].slice(0, 80));
   }, []);
+
+  const fillManualOrderCurrentPrice = useCallback(() => {
+    if (!ticker) {
+      return;
+    }
+
+    setManualOrder((current) => ({
+      ...current,
+      price: String(ticker.trade_price),
+    }));
+    addLog("info", "현재가를 수동 주문 가격에 입력했습니다.");
+  }, [addLog, ticker]);
 
   useEffect(() => {
     if (accountConnectAttemptedRef.current) {
@@ -1215,6 +1380,11 @@ function App() {
   }
 
   async function handleManualOrder() {
+    if (hasManualOrderErrors) {
+      addLog("warn", "수동 주문 입력을 확인하세요.");
+      return;
+    }
+
     setBusy(true);
     try {
       await invokeOrder({
@@ -1629,17 +1799,23 @@ function App() {
                 <option value="best">best 최유리</option>
               </select>
             </label>
-            <label>
-              가격/매수금액
-              <input
-                value={manualOrder.price ?? ""}
-                inputMode="decimal"
-                onChange={(event) => {
-                  const value = event.currentTarget.value;
-                  setManualOrder((current) => ({ ...current, price: value }));
-                }}
-              />
-            </label>
+            <div className="field-with-action">
+              <label>
+                가격/매수금액
+                <input
+                  value={manualOrder.price ?? ""}
+                  inputMode="decimal"
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setManualOrder((current) => ({ ...current, price: value }));
+                  }}
+                />
+              </label>
+              <button className="subtle-button" type="button" disabled={!ticker} onClick={fillManualOrderCurrentPrice}>
+                <Calculator size={15} />
+                현재가 입력
+              </button>
+            </div>
             <label>
               수량
               <input
@@ -1677,7 +1853,43 @@ function App() {
               </select>
             </label>
           </div>
-          <button className="primary-button" type="button" disabled={busy || (!dryRun && !isKeyReady)} onClick={handleManualOrder}>
+          <div className={`order-review ${hasManualOrderErrors ? "has-errors" : ""}`}>
+            <div className="order-review-header">
+              <div>
+                <span>주문 요약</span>
+                <strong>{manualOrderReview.title}</strong>
+              </div>
+              <span className={`review-mode ${dryRun ? "" : "danger"}`}>{dryRun ? "모의" : "실거래"}</span>
+            </div>
+            <dl className="order-review-list">
+              {manualOrderReview.rows.map((row) => (
+                <div key={row.label}>
+                  <dt>{row.label}</dt>
+                  <dd>{row.value}</dd>
+                </div>
+              ))}
+            </dl>
+            {manualOrderReview.errors.length > 0 ? (
+              <ul className="review-messages error">
+                {manualOrderReview.errors.map((message) => (
+                  <li key={message}>{message}</li>
+                ))}
+              </ul>
+            ) : null}
+            {manualOrderReview.warnings.length > 0 ? (
+              <ul className="review-messages warning">
+                {manualOrderReview.warnings.map((message) => (
+                  <li key={message}>{message}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={busy || hasManualOrderErrors || (!dryRun && !isKeyReady)}
+            onClick={handleManualOrder}
+          >
             <Send size={17} />
             주문 전송
           </button>
