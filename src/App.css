@@ -246,6 +246,72 @@ h2 {
   gap: 6px;
 }
 
+.template-tools {
+  align-items: end;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.template-list {
+  display: grid;
+  gap: 6px;
+}
+
+.template-row {
+  align-items: stretch;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(0, 1fr) 34px;
+}
+
+.template-load-button {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #dce4ea;
+  border-radius: 6px;
+  color: #172026;
+  justify-content: flex-start;
+  min-width: 0;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.template-load-button:hover {
+  border-color: #1f7a8c;
+}
+
+.template-load-button span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.template-load-button strong,
+.template-load-button em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.template-load-button strong {
+  font-size: 0.85rem;
+}
+
+.template-load-button em {
+  color: #697983;
+  font-size: 0.76rem;
+  font-style: normal;
+}
+
+.template-delete-button {
+  background: #fff1f1;
+  border: 1px solid #f0b0b0;
+  border-radius: 6px;
+  color: #a52c2c;
+  padding: 0;
+}
+
 .segmented-control button,
 .sort-control button,
 .timeframe-buttons button,
@@ -841,6 +907,11 @@ h2 {
 
   .app-shell {
     padding: 14px;
+  }
+
+  .template-tools {
+    align-items: stretch;
+    grid-template-columns: 1fr;
   }
 }
 

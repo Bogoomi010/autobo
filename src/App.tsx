@@ -20,10 +20,12 @@ import {
   Play,
   RefreshCw,
   RotateCcw,
+  Save,
   Send,
   ShieldCheck,
   Square,
   Star,
+  Trash2,
   Wallet,
 } from "lucide-react";
 import "./App.css";
@@ -96,6 +98,7 @@ type MarketFilter = "KRW" | "BTC" | "USDT" | "ALL";
 type MarketSortMode = "price" | "changeRate";
 type SortDirection = "desc" | "asc";
 type ManualOrderPreset = "limit" | "marketBuy" | "marketSell";
+type ManualOrderTemplateOrder = Omit<OrderRequest, "identifier">;
 
 type StrategySettings = {
   intervalSec: string;
@@ -120,6 +123,12 @@ type UserPreferences = {
   chartTimeframe: ChartTimeframe;
   strategy: StrategySettings;
   manualOrder: OrderRequest;
+};
+
+type ManualOrderTemplate = {
+  id: string;
+  name: string;
+  order: ManualOrderTemplateOrder;
 };
 
 type LogEntry = {
@@ -162,6 +171,8 @@ const CHART_AUTO_REFRESH_MS = 15_000;
 const MARKET_TICKER_REFRESH_MS = 10_000;
 const FAVORITE_MARKETS_STORAGE_KEY = "autobo.favoriteMarkets";
 const USER_PREFERENCES_STORAGE_KEY = "autobo.userPreferences.v1";
+const MANUAL_ORDER_TEMPLATES_STORAGE_KEY = "autobo.manualOrderTemplates.v1";
+const MAX_MANUAL_ORDER_TEMPLATES = 5;
 const defaultStrategy: StrategySettings = {
   intervalSec: "10",
   buyBelow: "",
@@ -265,6 +276,106 @@ function isOrderType(value: unknown): value is OrderRequest["ord_type"] {
 
 function stringValue(value: unknown, fallback = "") {
   return typeof value === "string" ? value : fallback;
+}
+
+function normalizeManualOrderMarket(value: unknown) {
+  const market = stringValue(value).trim().toUpperCase();
+  return isMarketCode(market) ? market : defaultManualOrder.market;
+}
+
+function normalizeTimeInForce(value: unknown) {
+  const timeInForce = stringValue(value).trim();
+  return timeInForce === "ioc" || timeInForce === "fok" || timeInForce === "post_only" ? timeInForce : "";
+}
+
+function createManualOrderTemplateOrder(order: OrderRequest): ManualOrderTemplateOrder {
+  return {
+    market: normalizeManualOrderMarket(order.market),
+    side: isOrderSide(order.side) ? order.side : defaultManualOrder.side,
+    volume: stringValue(order.volume).trim(),
+    price: stringValue(order.price).trim(),
+    ord_type: isOrderType(order.ord_type) ? order.ord_type : defaultManualOrder.ord_type,
+    time_in_force: normalizeTimeInForce(order.time_in_force),
+  };
+}
+
+function normalizeManualOrderTemplate(value: unknown): ManualOrderTemplate | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const name = stringValue(value.name).trim();
+  const order = isRecord(value.order) ? value.order : null;
+  if (!name || !order) {
+    return null;
+  }
+
+  return {
+    id: stringValue(value.id, `template-${name}`).trim() || `template-${name}`,
+    name,
+    order: {
+      market: normalizeManualOrderMarket(order.market),
+      side: isOrderSide(order.side) ? order.side : defaultManualOrder.side,
+      volume: stringValue(order.volume).trim(),
+      price: stringValue(order.price).trim(),
+      ord_type: isOrderType(order.ord_type) ? order.ord_type : defaultManualOrder.ord_type,
+      time_in_force: normalizeTimeInForce(order.time_in_force),
+    },
+  };
+}
+
+function loadManualOrderTemplates(): ManualOrderTemplate[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const stored = window.localStorage.getItem(MANUAL_ORDER_TEMPLATES_STORAGE_KEY);
+    if (!stored) {
+      return [];
+    }
+
+    const parsed: unknown = JSON.parse(stored);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .map(normalizeManualOrderTemplate)
+      .filter((template): template is ManualOrderTemplate => template !== null)
+      .slice(0, MAX_MANUAL_ORDER_TEMPLATES);
+  } catch {
+    return [];
+  }
+}
+
+function saveManualOrderTemplates(templates: ManualOrderTemplate[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(MANUAL_ORDER_TEMPLATES_STORAGE_KEY, JSON.stringify(templates));
+}
+
+function formatManualOrderTemplateSummary(template: ManualOrderTemplate) {
+  const { market, ord_type: ordType, price, side, time_in_force: timeInForce, volume } = template.order;
+  const sideText = side === "bid" ? "매수" : "매도";
+  const amountLabel = side === "bid" && ordType === "price" ? "금액" : "가격";
+  const parts = [market, sideText, ordType];
+
+  if (price) {
+    parts.push(`${amountLabel} ${price}`);
+  }
+
+  if (volume) {
+    parts.push(`수량 ${volume}`);
+  }
+
+  if (timeInForce) {
+    parts.push(timeInForce);
+  }
+
+  return parts.join(" / ");
 }
 
 function loadUserPreferences(): UserPreferences {
@@ -665,6 +776,8 @@ function App() {
   const [strategy, setStrategy] = useState<StrategySettings>(initialPreferences.strategy);
 
   const [manualOrder, setManualOrder] = useState<OrderRequest>(initialPreferences.manualOrder);
+  const [manualOrderTemplateName, setManualOrderTemplateName] = useState("");
+  const [manualOrderTemplates, setManualOrderTemplates] = useState<ManualOrderTemplate[]>(loadManualOrderTemplates);
 
   const isKeyReady = accountLinked;
   const normalizedMarket = market.trim().toUpperCase();
@@ -795,6 +908,10 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(FAVORITE_MARKETS_STORAGE_KEY, JSON.stringify(favoriteMarkets));
   }, [favoriteMarkets]);
+
+  useEffect(() => {
+    saveManualOrderTemplates(manualOrderTemplates);
+  }, [manualOrderTemplates]);
 
   useEffect(() => {
     saveUserPreferences({
@@ -1214,6 +1331,50 @@ function App() {
     addLog("info", "화면 설정을 기본값으로 초기화했습니다.");
   }
 
+  function handleSaveManualOrderTemplate() {
+    const name = manualOrderTemplateName.trim();
+    if (!name) {
+      addLog("warn", "수동 주문 템플릿 이름을 입력하세요.");
+      return;
+    }
+
+    const templateOrder = createManualOrderTemplateOrder({
+      ...manualOrder,
+      market: normalizedMarket,
+    });
+
+    setManualOrderTemplates((current) => {
+      const existingTemplate = current.find((template) => template.name.toLowerCase() === name.toLowerCase());
+      const nextTemplate: ManualOrderTemplate = {
+        id: existingTemplate?.id ?? `template-${Date.now().toString(36)}`,
+        name,
+        order: templateOrder,
+      };
+      const remainingTemplates = current.filter(
+        (template) => template.id !== existingTemplate?.id && template.name.toLowerCase() !== name.toLowerCase(),
+      );
+
+      return [nextTemplate, ...remainingTemplates].slice(0, MAX_MANUAL_ORDER_TEMPLATES);
+    });
+    setManualOrderTemplateName("");
+    addLog("info", `"${name}" 수동 주문 템플릿을 저장했습니다.`);
+  }
+
+  function handleApplyManualOrderTemplate(template: ManualOrderTemplate) {
+    setMarket(template.order.market);
+    setManualOrder((current) => ({
+      ...current,
+      ...template.order,
+      identifier: current.identifier,
+    }));
+    addLog("info", `"${template.name}" 수동 주문 템플릿을 불러왔습니다.`);
+  }
+
+  function handleDeleteManualOrderTemplate(template: ManualOrderTemplate) {
+    setManualOrderTemplates((current) => current.filter((item) => item.id !== template.id));
+    addLog("warn", `"${template.name}" 수동 주문 템플릿을 삭제했습니다.`);
+  }
+
   async function handleManualOrder() {
     setBusy(true);
     try {
@@ -1568,6 +1729,45 @@ function App() {
             <Send size={18} />
             <h2>수동 주문</h2>
           </div>
+          <div className="template-tools" aria-label="수동 주문 템플릿 저장">
+            <label>
+              템플릿 이름
+              <input
+                value={manualOrderTemplateName}
+                maxLength={24}
+                placeholder="예: BTC 시장가 매수"
+                onChange={(event) => setManualOrderTemplateName(event.currentTarget.value)}
+              />
+            </label>
+            <button className="secondary-button" type="button" onClick={handleSaveManualOrderTemplate}>
+              <Save size={16} />
+              저장
+            </button>
+          </div>
+          {manualOrderTemplates.length > 0 ? (
+            <div className="template-list" aria-label="저장된 수동 주문 템플릿">
+              {manualOrderTemplates.map((template) => (
+                <div className="template-row" key={template.id}>
+                  <button className="template-load-button" type="button" onClick={() => handleApplyManualOrderTemplate(template)}>
+                    <span>
+                      <strong>{template.name}</strong>
+                      <em>{formatManualOrderTemplateSummary(template)}</em>
+                    </span>
+                  </button>
+                  <button
+                    className="template-delete-button"
+                    type="button"
+                    aria-label={`${template.name} 템플릿 삭제`}
+                    onClick={() => handleDeleteManualOrderTemplate(template)}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="note">저장된 수동 주문 템플릿이 없습니다.</p>
+          )}
           <div className="preset-control" aria-label="수동 주문 프리셋">
             <button
               className={activeManualOrderPreset === "limit" ? "selected" : ""}
