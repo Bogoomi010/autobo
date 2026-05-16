@@ -269,6 +269,50 @@ h2 {
   color: #ffffff;
 }
 
+.quick-fill-panel {
+  background: #f6f9fb;
+  border: 1px solid #dce4ea;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.quick-fill-group {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 58px 1fr;
+}
+
+.quick-fill-group > span {
+  color: #62717b;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.quick-fill-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.quick-fill-actions button {
+  background: #ffffff;
+  border: 1px solid #ccd8df;
+  border-radius: 6px;
+  color: #29444f;
+  font-size: 0.78rem;
+  font-weight: 800;
+  min-height: 30px;
+  padding: 5px 9px;
+}
+
+.quick-fill-actions button:hover {
+  border-color: #1f7a8c;
+  color: #155f6f;
+}
+
 .market-list-meta,
 .chart-toolbar,
 .chart-heading-meta {

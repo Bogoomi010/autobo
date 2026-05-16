@@ -55,6 +55,27 @@ type AssetAccount = {
   unit_currency: string;
 };
 
+type OrderChanceAccount = {
+  currency?: string;
+  balance?: string;
+  locked?: string;
+  avg_buy_price?: string;
+  unit_currency?: string;
+};
+
+type OrderChance = {
+  bid_account?: OrderChanceAccount;
+  ask_account?: OrderChanceAccount;
+  market?: {
+    bid?: {
+      min_total?: string;
+    };
+    ask?: {
+      min_total?: string;
+    };
+  };
+};
+
 type MarketInfo = {
   market: string;
   korean_name: string;
@@ -376,6 +397,23 @@ function parseAssetAmount(value: string) {
   return Number.isFinite(numberValue) ? numberValue : 0;
 }
 
+function parsePositiveAmount(value: string | undefined) {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : null;
+}
+
+function formatOrderInputNumber(value: number, maxFractionDigits = 8) {
+  if (!Number.isFinite(value)) {
+    return "";
+  }
+
+  return value.toFixed(maxFractionDigits).replace(/\.?0+$/, "");
+}
+
+function getOrderChance(value: unknown): OrderChance | null {
+  return isRecord(value) ? (value as OrderChance) : null;
+}
+
 function getAssetMarket(account: AssetAccount) {
   const currency = account.currency.trim().toUpperCase();
   const unitCurrency = (account.unit_currency || "KRW").trim().toUpperCase();
@@ -679,6 +717,47 @@ function App() {
   const hasSelectedMarketWarning =
     selectedMarketInfo?.market_warning === "CAUTION" || selectedMarketInfo?.market_event?.warning === true;
   const favoriteMarketSet = useMemo(() => new Set(favoriteMarkets), [favoriteMarkets]);
+  const orderChance = useMemo(() => getOrderChance(chance), [chance]);
+  const orderChanceAskBalance = useMemo(
+    () => parsePositiveAmount(orderChance?.ask_account?.balance),
+    [orderChance],
+  );
+  const orderChanceMinBuyAmount = useMemo(
+    () =>
+      parsePositiveAmount(orderChance?.market?.bid?.min_total) ??
+      parsePositiveAmount(orderChance?.market?.ask?.min_total),
+    [orderChance],
+  );
+  const quickLimitPrices = useMemo(() => {
+    if (!ticker || !Number.isFinite(ticker.trade_price) || ticker.trade_price <= 0) {
+      return [];
+    }
+
+    return [
+      { label: "현재가", value: ticker.trade_price },
+      { label: "-1%", value: ticker.trade_price * 0.99 },
+      { label: "+1%", value: ticker.trade_price * 1.01 },
+    ];
+  }, [ticker]);
+  const quickBuyAmounts = useMemo(() => {
+    const amounts = [
+      ...(orderChanceMinBuyAmount ? [{ label: "최소", value: orderChanceMinBuyAmount }] : []),
+      { label: "1만", value: 10_000 },
+      { label: "5만", value: 50_000 },
+      { label: "10만", value: 100_000 },
+    ];
+    const seen = new Set<string>();
+
+    return amounts.filter((item) => {
+      const valueKey = formatOrderInputNumber(item.value, 0);
+      if (seen.has(valueKey)) {
+        return false;
+      }
+
+      seen.add(valueKey);
+      return true;
+    });
+  }, [orderChanceMinBuyAmount]);
   const emptyMarketMessage = showFavoritesOnly
     ? favoriteMarkets.length === 0
       ? "즐겨찾기한 종목이 없습니다."
@@ -748,6 +827,48 @@ function App() {
       });
     },
     [normalizedMarket],
+  );
+  const fillManualLimitPrice = useCallback(
+    (price: number) => {
+      setManualOrder((current) => ({
+        ...current,
+        market: normalizedMarket,
+        price: formatOrderInputNumber(price),
+      }));
+    },
+    [normalizedMarket],
+  );
+  const fillManualBuyAmount = useCallback(
+    (amount: number) => {
+      setManualOrder((current) => ({
+        ...current,
+        market: normalizedMarket,
+        side: "bid",
+        volume: "",
+        price: formatOrderInputNumber(amount, 0),
+        ord_type: "price",
+        time_in_force: "",
+      }));
+    },
+    [normalizedMarket],
+  );
+  const fillManualSellVolume = useCallback(
+    (ratio: number) => {
+      if (!orderChanceAskBalance) {
+        return;
+      }
+
+      setManualOrder((current) => ({
+        ...current,
+        market: normalizedMarket,
+        side: "ask",
+        volume: formatOrderInputNumber(orderChanceAskBalance * ratio),
+        price: "",
+        ord_type: "market",
+        time_in_force: "",
+      }));
+    },
+    [normalizedMarket, orderChanceAskBalance],
   );
   const filteredMarkets = useMemo(() => {
     const search = marketSearch.trim().toLowerCase();
@@ -1596,6 +1717,50 @@ function App() {
               <ListChecks size={15} />
               시장가 매도
             </button>
+          </div>
+          <div className="quick-fill-panel">
+            {quickLimitPrices.length > 0 ? (
+              <div className="quick-fill-group">
+                <span>지정가</span>
+                <div className="quick-fill-actions">
+                  {quickLimitPrices.map((item) => (
+                    <button type="button" key={item.label} onClick={() => fillManualLimitPrice(item.value)}>
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            <div className="quick-fill-group">
+              <span>매수금</span>
+              <div className="quick-fill-actions">
+                {quickBuyAmounts.map((item) => (
+                  <button
+                    type="button"
+                    key={`${item.label}-${item.value}`}
+                    onClick={() => fillManualBuyAmount(item.value)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {orderChanceAskBalance ? (
+              <div className="quick-fill-group">
+                <span>매도량</span>
+                <div className="quick-fill-actions">
+                  <button type="button" onClick={() => fillManualSellVolume(0.25)}>
+                    25%
+                  </button>
+                  <button type="button" onClick={() => fillManualSellVolume(0.5)}>
+                    50%
+                  </button>
+                  <button type="button" onClick={() => fillManualSellVolume(1)}>
+                    100%
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
           <div className="form-grid">
             <label>
