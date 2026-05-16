@@ -129,6 +129,14 @@ type LogEntry = {
   at: string;
 };
 
+type ManualOrderAssist = {
+  issues: string[];
+  warnings: string[];
+  estimatedNotional: string;
+  estimatedQuantity: string;
+  mode: string;
+};
+
 const marketFilters: { value: MarketFilter; label: string }[] = [
   { value: "ALL", label: "전체" },
   { value: "KRW", label: "KRW" },
@@ -369,6 +377,100 @@ function formatMarketPrice(market: string, price: number) {
   });
 
   return `${formattedPrice} ${quoteCurrency}`;
+}
+
+function parsePositiveDecimal(value?: string | null) {
+  const numberValue = Number(value?.trim());
+  return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : null;
+}
+
+function formatManualAmount(value: number | null, currency: string, maxFractionDigits: number) {
+  if (value === null || !Number.isFinite(value)) {
+    return "-";
+  }
+
+  return `${value.toLocaleString("ko-KR", { maximumFractionDigits: maxFractionDigits })} ${currency}`;
+}
+
+function buildManualOrderAssist(order: OrderRequest, ticker: Ticker | null, dryRun: boolean): ManualOrderAssist {
+  const marketParts = order.market.trim().toUpperCase().split("-");
+  const quoteCurrency = marketParts[0] || "QUOTE";
+  const baseCurrency = marketParts[1] || "BASE";
+  const price = parsePositiveDecimal(order.price);
+  const volume = parsePositiveDecimal(order.volume);
+  const issues: string[] = [];
+  const warnings: string[] = [];
+  let estimatedNotional: number | null = null;
+  let estimatedQuantity: number | null = volume;
+
+  if (!isMarketCode(order.market.trim().toUpperCase())) {
+    issues.push("Market code must look like KRW-BTC.");
+  }
+
+  if (order.ord_type === "limit") {
+    if (price === null) {
+      issues.push("Limit orders need a price.");
+    }
+    if (volume === null) {
+      issues.push("Limit orders need a volume.");
+    }
+    if (price !== null && volume !== null) {
+      estimatedNotional = price * volume;
+    }
+  }
+
+  if (order.ord_type === "price") {
+    if (order.side !== "bid") {
+      issues.push("ord_type=price is only valid for bid market buys.");
+    }
+    if (price === null) {
+      issues.push("Market buys need the total buy amount in the price field.");
+    } else {
+      estimatedNotional = price;
+      if (ticker?.trade_price) {
+        estimatedQuantity = price / ticker.trade_price;
+      }
+    }
+  }
+
+  if (order.ord_type === "market") {
+    if (order.side !== "ask") {
+      issues.push("ord_type=market is only valid for ask market sells.");
+    }
+    if (volume === null) {
+      issues.push("Market sells need a volume.");
+    } else if (ticker?.trade_price) {
+      estimatedNotional = volume * ticker.trade_price;
+    } else {
+      warnings.push("Refresh ticker data to estimate the sell amount.");
+    }
+  }
+
+  if (order.ord_type === "best") {
+    if (!order.time_in_force) {
+      warnings.push("Best orders should normally use IOC or FOK.");
+    }
+
+    if (order.side === "bid") {
+      if (price === null) {
+        issues.push("Best bid orders need the total buy amount in the price field.");
+      } else {
+        estimatedNotional = price;
+      }
+    } else if (volume === null) {
+      issues.push("Best ask orders need a volume.");
+    } else if (ticker?.trade_price) {
+      estimatedNotional = volume * ticker.trade_price;
+    }
+  }
+
+  return {
+    issues,
+    warnings,
+    estimatedNotional: formatManualAmount(estimatedNotional, quoteCurrency, quoteCurrency === "KRW" ? 0 : 8),
+    estimatedQuantity: formatManualAmount(estimatedQuantity, baseCurrency, 8),
+    mode: dryRun ? "Dry run" : "Live order",
+  };
 }
 
 function parseAssetAmount(value: string) {
@@ -715,6 +817,10 @@ function App() {
 
     return null;
   }, [manualOrder.ord_type, manualOrder.side]);
+  const manualOrderAssist = useMemo(
+    () => buildManualOrderAssist(manualOrder, ticker, dryRun),
+    [dryRun, manualOrder, ticker],
+  );
   const applyManualOrderPreset = useCallback(
     (preset: ManualOrderPreset) => {
       setManualOrder((current) => {
@@ -1214,7 +1320,24 @@ function App() {
     addLog("info", "화면 설정을 기본값으로 초기화했습니다.");
   }
 
+  function handleUseTickerPrice() {
+    if (!ticker) {
+      return;
+    }
+
+    setManualOrder((current) => ({
+      ...current,
+      market: normalizedMarket,
+      price: String(ticker.trade_price),
+    }));
+  }
+
   async function handleManualOrder() {
+    if (manualOrderAssist.issues.length > 0) {
+      addLog("warn", `Manual order blocked: ${manualOrderAssist.issues[0]}`);
+      return;
+    }
+
     setBusy(true);
     try {
       await invokeOrder({
@@ -1597,6 +1720,53 @@ function App() {
               시장가 매도
             </button>
           </div>
+          <div className={`manual-assist ${manualOrderAssist.issues.length > 0 ? "has-issues" : ""}`}>
+            <div className="manual-assist-head">
+              <div>
+                <strong>Order preview</strong>
+                <span>{manualOrderAssist.mode}</span>
+              </div>
+              <button className="subtle-button" type="button" disabled={!ticker} onClick={handleUseTickerPrice}>
+                Use ticker price
+              </button>
+            </div>
+            <dl className="manual-assist-grid">
+              <div>
+                <dt>Market</dt>
+                <dd>{manualOrder.market.trim().toUpperCase() || normalizedMarket}</dd>
+              </div>
+              <div>
+                <dt>Order</dt>
+                <dd>
+                  {manualOrder.side}/{manualOrder.ord_type}
+                </dd>
+              </div>
+              <div>
+                <dt>Est. amount</dt>
+                <dd>{manualOrderAssist.estimatedNotional}</dd>
+              </div>
+              <div>
+                <dt>Est. quantity</dt>
+                <dd>{manualOrderAssist.estimatedQuantity}</dd>
+              </div>
+            </dl>
+            {manualOrderAssist.issues.length > 0 ? (
+              <ul className="manual-assist-messages error">
+                {manualOrderAssist.issues.map((issue) => (
+                  <li key={issue}>{issue}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="manual-assist-ready">Ready to submit.</p>
+            )}
+            {manualOrderAssist.warnings.length > 0 ? (
+              <ul className="manual-assist-messages warning">
+                {manualOrderAssist.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
           <div className="form-grid">
             <label>
               side
@@ -1677,7 +1847,12 @@ function App() {
               </select>
             </label>
           </div>
-          <button className="primary-button" type="button" disabled={busy || (!dryRun && !isKeyReady)} onClick={handleManualOrder}>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={busy || manualOrderAssist.issues.length > 0 || (!dryRun && !isKeyReady)}
+            onClick={handleManualOrder}
+          >
             <Send size={17} />
             주문 전송
           </button>
