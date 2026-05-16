@@ -203,6 +203,8 @@ const defaultUserPreferences: UserPreferences = {
   strategy: defaultStrategy,
   manualOrder: defaultManualOrder,
 };
+const manualBuyQuickAmounts = [10_000, 50_000, 100_000, 500_000];
+const manualSellQuickRatios = [0.25, 0.5, 1];
 
 function compactJson(value: unknown) {
   return JSON.stringify(value, null, 2);
@@ -572,6 +574,41 @@ function normalizeManualOrder(order: OrderRequest): OrderRequest {
 function parseAssetAmount(value: string) {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
+function isAssetAccount(value: unknown): value is AssetAccount {
+  return (
+    isRecord(value) &&
+    typeof value.currency === "string" &&
+    typeof value.balance === "string" &&
+    typeof value.locked === "string" &&
+    typeof value.avg_buy_price === "string" &&
+    typeof value.unit_currency === "string"
+  );
+}
+
+function toAssetAccounts(value: unknown) {
+  return Array.isArray(value) ? value.filter(isAssetAccount) : [];
+}
+
+function getMarketBaseCurrency(marketCode: string) {
+  return marketCode.split("-")[1]?.trim().toUpperCase() ?? "";
+}
+
+function formatOrderVolume(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "";
+  }
+
+  return value.toFixed(8).replace(/\.?0+$/, "");
+}
+
+function formatQuickKrwAmount(value: number) {
+  return `${value.toLocaleString("ko-KR")} KRW`;
+}
+
+function formatSellRatioLabel(value: number) {
+  return `${Math.round(value * 100)}%`;
 }
 
 function getAssetMarket(account: AssetAccount) {
@@ -958,6 +995,56 @@ function App() {
       });
     },
     [normalizedMarket],
+  );
+  const sessionAccounts = useMemo(() => toAssetAccounts(accounts), [accounts]);
+  const selectedBaseCurrency = useMemo(() => getMarketBaseCurrency(normalizedMarket), [normalizedMarket]);
+  const selectedAssetAccount = useMemo(
+    () =>
+      sessionAccounts.find(
+        (account) => account.currency.trim().toUpperCase() === selectedBaseCurrency,
+      ) ?? null,
+    [selectedBaseCurrency, sessionAccounts],
+  );
+  const selectedAssetBalance = useMemo(
+    () => (selectedAssetAccount ? parseAssetAmount(selectedAssetAccount.balance) : 0),
+    [selectedAssetAccount],
+  );
+  const selectedAssetBalanceText =
+    selectedAssetBalance > 0 && selectedBaseCurrency
+      ? formatAssetQuantity(selectedAssetBalance, selectedBaseCurrency)
+      : "No loaded balance";
+  const applyManualBuyAmount = useCallback(
+    (amount: number) => {
+      setManualOrder((current) => ({
+        ...current,
+        market: normalizedMarket,
+        side: "bid",
+        volume: "",
+        price: String(amount),
+        ord_type: "price",
+        time_in_force: "",
+      }));
+    },
+    [normalizedMarket],
+  );
+  const applyManualSellRatio = useCallback(
+    (ratio: number) => {
+      const volume = formatOrderVolume(selectedAssetBalance * ratio);
+      if (!volume) {
+        return;
+      }
+
+      setManualOrder((current) => ({
+        ...current,
+        market: normalizedMarket,
+        side: "ask",
+        volume,
+        price: "",
+        ord_type: "market",
+        time_in_force: "",
+      }));
+    },
+    [normalizedMarket, selectedAssetBalance],
   );
   const filteredMarkets = useMemo(() => {
     const search = marketSearch.trim().toLowerCase();
@@ -1840,6 +1927,40 @@ function App() {
               <ListChecks size={15} />
               시장가 매도
             </button>
+          </div>
+          <div className="quick-fill-panel" aria-label="Manual order quick fill">
+            <div className="quick-fill-group">
+              <span>Market buy amount</span>
+              <div className="quick-fill-buttons">
+                {manualBuyQuickAmounts.map((amount) => (
+                  <button
+                    className="quick-fill-button"
+                    key={amount}
+                    type="button"
+                    onClick={() => applyManualBuyAmount(amount)}
+                  >
+                    {formatQuickKrwAmount(amount)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="quick-fill-group">
+              <span>Sell from balance</span>
+              <em>{selectedAssetBalanceText}</em>
+              <div className="quick-fill-buttons">
+                {manualSellQuickRatios.map((ratio) => (
+                  <button
+                    className="quick-fill-button"
+                    disabled={selectedAssetBalance <= 0}
+                    key={ratio}
+                    type="button"
+                    onClick={() => applyManualSellRatio(ratio)}
+                  >
+                    {formatSellRatioLabel(ratio)}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
           <div className="form-grid">
             <label>
