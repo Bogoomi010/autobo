@@ -583,6 +583,75 @@ h2 {
   padding: 10px;
 }
 
+.order-preflight {
+  background: #f6f9fb;
+  border: 1px solid #dce4ea;
+  border-radius: 6px;
+  display: grid;
+  gap: 10px;
+  padding: 11px 12px;
+}
+
+.order-preflight-header {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.order-preflight-header strong {
+  color: #172026;
+  font-size: 0.86rem;
+}
+
+.order-preflight-header span {
+  color: #155f6f;
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-align: right;
+}
+
+.order-preflight ul {
+  display: grid;
+  gap: 7px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.order-preflight li {
+  align-items: center;
+  color: #4d5c66;
+  display: flex;
+  font-size: 0.8rem;
+  font-weight: 700;
+  gap: 8px;
+  line-height: 1.35;
+}
+
+.order-preflight li span {
+  border-radius: 999px;
+  flex: 0 0 8px;
+  height: 8px;
+  width: 8px;
+}
+
+.order-preflight li.ok span {
+  background: #2c9a55;
+}
+
+.order-preflight li.warning span {
+  background: #d5962d;
+}
+
+.order-preflight li.error {
+  color: #a52c2c;
+}
+
+.order-preflight li.error span {
+  background: #b4413b;
+}
+
 .output-panel,
 .log-panel {
   min-height: 360px;

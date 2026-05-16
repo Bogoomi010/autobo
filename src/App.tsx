@@ -129,6 +129,13 @@ type LogEntry = {
   at: string;
 };
 
+type OrderPreflightSeverity = "ok" | "warning" | "error";
+
+type OrderPreflightItem = {
+  severity: OrderPreflightSeverity;
+  message: string;
+};
+
 const marketFilters: { value: MarketFilter; label: string }[] = [
   { value: "ALL", label: "전체" },
   { value: "KRW", label: "KRW" },
@@ -369,6 +376,22 @@ function formatMarketPrice(market: string, price: number) {
   });
 
   return `${formattedPrice} ${quoteCurrency}`;
+}
+
+function parsePositiveDecimal(value: string | null | undefined) {
+  const numberValue = Number(value?.trim() ?? "");
+  return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : null;
+}
+
+function formatQuoteAmount(market: string, value: number) {
+  if (!Number.isFinite(value)) {
+    return "-";
+  }
+
+  const quoteCurrency = market.split("-")[0] ?? "";
+  return `${value.toLocaleString("ko-KR", {
+    maximumFractionDigits: quoteCurrency === "KRW" ? 0 : 8,
+  })} ${quoteCurrency}`;
 }
 
 function parseAssetAmount(value: string) {
@@ -715,6 +738,77 @@ function App() {
 
     return null;
   }, [manualOrder.ord_type, manualOrder.side]);
+  const manualOrderPreflight = useMemo(() => {
+    const orderMarket = manualOrder.market.trim().toUpperCase();
+    const priceText = manualOrder.price?.trim() ?? "";
+    const volumeText = manualOrder.volume?.trim() ?? "";
+    const priceValue = parsePositiveDecimal(priceText);
+    const volumeValue = parsePositiveDecimal(volumeText);
+    const items: OrderPreflightItem[] = [];
+    let estimatedAmountText: string | null = null;
+
+    if (isMarketCode(orderMarket)) {
+      items.push({ severity: "ok", message: `${orderMarket} 주문 대상 확인` });
+    } else {
+      items.push({ severity: "error", message: "마켓 코드는 KRW-BTC 형식으로 입력해야 합니다." });
+    }
+
+    if (manualOrder.ord_type === "limit") {
+      if (priceValue === null) {
+        items.push({ severity: "error", message: "지정가 주문은 양수 가격이 필요합니다." });
+      }
+      if (volumeValue === null) {
+        items.push({ severity: "error", message: "지정가 주문은 양수 수량이 필요합니다." });
+      }
+      if (priceValue !== null && volumeValue !== null) {
+        estimatedAmountText = formatQuoteAmount(orderMarket, priceValue * volumeValue);
+        items.push({ severity: "ok", message: "지정가 가격과 수량이 모두 입력되었습니다." });
+      }
+    } else if (manualOrder.side === "bid" && manualOrder.ord_type === "price") {
+      if (priceValue === null) {
+        items.push({ severity: "error", message: "시장가 매수는 매수 금액(price)이 필요합니다." });
+      } else {
+        estimatedAmountText = formatQuoteAmount(orderMarket, priceValue);
+        items.push({ severity: "ok", message: "시장가 매수 금액이 입력되었습니다." });
+      }
+      if (volumeText !== "") {
+        items.push({ severity: "warning", message: "시장가 매수에서는 수량 입력값이 전송되지 않습니다." });
+      }
+    } else if (manualOrder.side === "ask" && manualOrder.ord_type === "market") {
+      if (volumeValue === null) {
+        items.push({ severity: "error", message: "시장가 매도는 매도 수량(volume)이 필요합니다." });
+      } else {
+        items.push({ severity: "ok", message: "시장가 매도 수량이 입력되었습니다." });
+        if (ticker?.market === orderMarket) {
+          estimatedAmountText = formatQuoteAmount(orderMarket, volumeValue * ticker.trade_price);
+        } else {
+          items.push({ severity: "warning", message: "예상 금액은 현재 선택 마켓 시세가 있을 때 계산됩니다." });
+        }
+      }
+      if (priceText !== "") {
+        items.push({ severity: "warning", message: "시장가 매도에서는 가격 입력값이 전송되지 않습니다." });
+      }
+    } else {
+      items.push({ severity: "warning", message: "선택한 side/ord_type 조합은 고급 주문입니다. Upbit 주문 규칙을 다시 확인하세요." });
+      if (priceValue !== null && volumeValue !== null) {
+        estimatedAmountText = formatQuoteAmount(orderMarket, priceValue * volumeValue);
+      }
+    }
+
+    if (hasSelectedMarketWarning) {
+      items.push({ severity: "warning", message: "선택한 마켓에 투자 유의 또는 경고 정보가 있습니다." });
+    }
+
+    if (!dryRun) {
+      items.push({ severity: "warning", message: "현재 실거래 모드입니다. 주문 전 금액과 수량을 다시 확인하세요." });
+    }
+
+    return {
+      estimatedAmountText,
+      hasError: items.some((item) => item.severity === "error"),
+      items,
+    };
+  }, [dryRun, hasSelectedMarketWarning, manualOrder, ticker]);
   const applyManualOrderPreset = useCallback(
     (preset: ManualOrderPreset) => {
       setManualOrder((current) => {
@@ -1215,6 +1309,11 @@ function App() {
   }
 
   async function handleManualOrder() {
+    if (manualOrderPreflight.hasError) {
+      addLog("warn", "수동 주문 사전 점검을 통과해야 주문을 전송할 수 있습니다.");
+      return;
+    }
+
     setBusy(true);
     try {
       await invokeOrder({
@@ -1677,7 +1776,26 @@ function App() {
               </select>
             </label>
           </div>
-          <button className="primary-button" type="button" disabled={busy || (!dryRun && !isKeyReady)} onClick={handleManualOrder}>
+          <div className="order-preflight">
+            <div className="order-preflight-header">
+              <strong>주문 사전 점검</strong>
+              <span>{manualOrderPreflight.estimatedAmountText ?? "예상 금액 계산 대기"}</span>
+            </div>
+            <ul>
+              {manualOrderPreflight.items.map((item) => (
+                <li className={item.severity} key={item.message}>
+                  <span aria-hidden="true" />
+                  {item.message}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={busy || manualOrderPreflight.hasError || (!dryRun && !isKeyReady)}
+            onClick={handleManualOrder}
+          >
             <Send size={17} />
             주문 전송
           </button>
