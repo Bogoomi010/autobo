@@ -39,6 +39,19 @@ type OrderRequest = {
   time_in_force?: string | null;
 };
 
+type OrderChanceAccount = {
+  currency: string;
+  balance: string;
+  locked?: string;
+  avg_buy_price?: string;
+  unit_currency?: string;
+};
+
+type OrderChance = {
+  bid_account?: OrderChanceAccount;
+  ask_account?: OrderChanceAccount;
+};
+
 type Ticker = {
   market: string;
   trade_price: number;
@@ -195,6 +208,7 @@ const defaultMarketSort: MarketSort = {
   mode: "price",
   direction: "desc",
 };
+const quickOrderRatios = [25, 50, 100];
 const defaultUserPreferences: UserPreferences = {
   market: "KRW-BTC",
   dryRun: true,
@@ -302,6 +316,25 @@ function loadRecentMarkets() {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isOrderChanceAccount(value: unknown): value is OrderChanceAccount {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return typeof value.currency === "string" && typeof value.balance === "string";
+}
+
+function toOrderChance(value: unknown): OrderChance | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  return {
+    bid_account: isOrderChanceAccount(value.bid_account) ? value.bid_account : undefined,
+    ask_account: isOrderChanceAccount(value.ask_account) ? value.ask_account : undefined,
+  };
 }
 
 function isMarketFilter(value: unknown): value is MarketFilter {
@@ -598,6 +631,22 @@ function toOrderInputNumber(value: number, maximumFractionDigits = 8) {
   return value.toFixed(maximumFractionDigits).replace(/\.?0+$/, "");
 }
 
+function parsePositiveNumber(value: unknown) {
+  const parsed = typeof value === "string" || typeof value === "number" ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function toInputDecimal(value: number, fractionDigits: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "";
+  }
+
+  const factor = 10 ** fractionDigits;
+  const floored = Math.floor((value + Number.EPSILON) * factor) / factor;
+
+  return floored.toFixed(fractionDigits).replace(/\.?0+$/, "");
+}
+
 function formatOrderQuote(value: number | null, quoteCurrency: string) {
   if (value === null || !Number.isFinite(value)) {
     return "-";
@@ -606,17 +655,6 @@ function formatOrderQuote(value: number | null, quoteCurrency: string) {
   return `${value.toLocaleString("ko-KR", {
     maximumFractionDigits: quoteCurrency === "KRW" ? 0 : 8,
   })} ${quoteCurrency}`;
-}
-
-function formatDecimalInput(value: number, maximumFractionDigits = 8) {
-  if (!Number.isFinite(value)) {
-    return "";
-  }
-
-  return value.toLocaleString("en-US", {
-    maximumFractionDigits,
-    useGrouping: false,
-  });
 }
 
 function formatOrderQuantity(value: number, currency: string) {
@@ -1287,6 +1325,10 @@ function App() {
     return { tone: "ok" as const, message: "최유리 주문은 Upbit 조건을 한 번 더 확인하세요." };
   }, [manualOrder.market, manualOrder.ord_type, manualOrder.side, manualOrderNumbers.price, manualOrderNumbers.volume]);
   const canSubmitManualOrder = manualOrderValidation.isValid && !busy && (dryRun || isKeyReady);
+  const orderChance = useMemo(() => toOrderChance(chance), [chance]);
+  const availableQuoteBalance = parsePositiveNumber(orderChance?.bid_account?.balance);
+  const availableBaseBalance = parsePositiveNumber(orderChance?.ask_account?.balance);
+  const canEstimateVolume = Boolean(currentTradePrice && currentTradePrice > 0);
   const filteredMarkets = useMemo(() => {
     const search = marketSearch.trim().toLowerCase();
 
@@ -1380,6 +1422,99 @@ function App() {
     };
     setLogs((current) => [next, ...current].slice(0, 80));
   }, []);
+
+  const fillManualMarketBuyAmount = useCallback(
+    (amount: number) => {
+      setManualOrder((current) => ({
+        ...current,
+        market: normalizedMarket,
+        side: "bid",
+        price: toInputDecimal(amount, 0),
+        volume: "",
+        ord_type: "price",
+        time_in_force: "",
+      }));
+    },
+    [normalizedMarket],
+  );
+
+  const fillManualOrderRatio = useCallback(
+    (ratio: number) => {
+      const normalizedRatio = Math.max(Math.min(ratio, 100), 0) / 100;
+
+      if (manualOrder.side === "ask" || manualOrder.ord_type === "market") {
+        const volume = toInputDecimal(availableBaseBalance * normalizedRatio, 8);
+        if (!volume) {
+          addLog("warn", "매도 가능 수량을 확인하려면 잔고/주문 가능정보를 갱신하세요.");
+          return;
+        }
+
+        setManualOrder((current) => ({
+          ...current,
+          market: normalizedMarket,
+          side: "ask",
+          volume,
+          price: current.ord_type === "limit" ? current.price : "",
+          ord_type: current.ord_type === "limit" ? "limit" : "market",
+          time_in_force: current.ord_type === "limit" ? current.time_in_force : "",
+        }));
+        return;
+      }
+
+      const price = toInputDecimal(availableQuoteBalance * normalizedRatio, 0);
+      if (!price) {
+        addLog("warn", "매수 가능 금액을 확인하려면 잔고/주문 가능정보를 갱신하세요.");
+        return;
+      }
+
+      if (manualOrder.ord_type === "limit" && !ticker?.trade_price) {
+        addLog("warn", "현재가를 먼저 갱신해야 지정가 수량을 계산할 수 있습니다.");
+        return;
+      }
+
+      setManualOrder((current) => ({
+        ...current,
+        market: normalizedMarket,
+        side: "bid",
+        price:
+          current.ord_type === "limit" && ticker
+            ? toInputDecimal(ticker.trade_price, quoteCurrency === "KRW" ? 0 : 8)
+            : price,
+        volume: current.ord_type === "limit" && ticker ? toInputDecimal(Number(price) / ticker.trade_price, 8) : "",
+        ord_type: current.ord_type === "limit" ? "limit" : "price",
+        time_in_force: current.ord_type === "limit" ? current.time_in_force : "",
+      }));
+    },
+    [
+      addLog,
+      availableBaseBalance,
+      availableQuoteBalance,
+      manualOrder.ord_type,
+      manualOrder.side,
+      normalizedMarket,
+      quoteCurrency,
+      ticker,
+    ],
+  );
+
+  const estimateLimitVolumeFromAmount = useCallback(
+    (amount: number) => {
+      if (!ticker?.trade_price) {
+        addLog("warn", "현재가를 먼저 갱신해야 지정가 수량을 계산할 수 있습니다.");
+        return;
+      }
+
+      setManualOrder((current) => ({
+        ...current,
+        market: normalizedMarket,
+        side: current.side,
+        price: toInputDecimal(ticker.trade_price, quoteCurrency === "KRW" ? 0 : 8),
+        volume: toInputDecimal(amount / ticker.trade_price, 8),
+        ord_type: "limit",
+      }));
+    },
+    [addLog, normalizedMarket, quoteCurrency, ticker],
+  );
 
   useEffect(() => {
     if (accountConnectAttemptedRef.current) {
@@ -2230,6 +2365,39 @@ function App() {
             <div className="manual-estimate">
               <Calculator size={16} />
               <span>{manualAssistSummary}</span>
+            </div>
+          </div>
+          <div className="manual-helper">
+            <div className="manual-helper-header">
+              <span>빠른 입력</span>
+              <em>
+                가능 {numberFormat.format(Math.floor(availableQuoteBalance))} {quoteCurrency} /{" "}
+                {toInputDecimal(availableBaseBalance, 8) || "0"} {baseCurrency}
+              </em>
+            </div>
+            <div className="quick-fill-group" aria-label="시장가 매수 금액">
+              <span>시장가 매수</span>
+              {manualBuyQuickAmounts.map((amount) => (
+                <button type="button" key={amount} onClick={() => fillManualMarketBuyAmount(amount)}>
+                  {numberFormat.format(amount)}원
+                </button>
+              ))}
+            </div>
+            <div className="quick-fill-group" aria-label="가능 잔고 비율">
+              <span>가능 잔고</span>
+              {quickOrderRatios.map((ratio) => (
+                <button type="button" key={ratio} onClick={() => fillManualOrderRatio(ratio)}>
+                  {ratio}%
+                </button>
+              ))}
+            </div>
+            <div className="quick-fill-group" aria-label="현재가 기준 지정가 수량">
+              <span>현재가 기준</span>
+              {manualBuyQuickAmounts.map((amount) => (
+                <button type="button" key={amount} disabled={!canEstimateVolume} onClick={() => estimateLimitVolumeFromAmount(amount)}>
+                  {numberFormat.format(amount)}원
+                </button>
+              ))}
             </div>
           </div>
           <div className="form-grid">
