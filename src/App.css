@@ -237,6 +237,83 @@ h2 {
   align-content: start;
 }
 
+.recent-market-strip {
+  background: #f6f9fb;
+  border: 1px solid #dce4ea;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.recent-market-strip-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.recent-market-strip-header span {
+  color: #62717b;
+  font-size: 0.78rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.recent-market-buttons {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.recent-market-buttons button {
+  align-items: start;
+  background: #ffffff;
+  border: 1px solid #d8e3e9;
+  border-radius: 6px;
+  color: #172026;
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+  min-width: 0;
+  padding: 8px;
+  text-align: left;
+}
+
+.recent-market-buttons button:hover,
+.recent-market-buttons button.selected {
+  border-color: #1f7a8c;
+}
+
+.recent-market-buttons button.selected {
+  background: #edf8fa;
+}
+
+.recent-market-buttons span,
+.recent-market-buttons code,
+.recent-market-buttons em {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.recent-market-buttons span {
+  font-size: 0.82rem;
+  font-weight: 850;
+  line-height: 1.2;
+}
+
+.recent-market-buttons code,
+.recent-market-buttons em {
+  font-size: 0.73rem;
+  font-style: normal;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.recent-market-buttons code {
+  color: #155f6f;
+}
+
 .segmented-control,
 .sort-control,
 .timeframe-buttons,

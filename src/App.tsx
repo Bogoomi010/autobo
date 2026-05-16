@@ -161,6 +161,8 @@ const ASSET_WINDOW_LABEL = "asset";
 const CHART_AUTO_REFRESH_MS = 15_000;
 const MARKET_TICKER_REFRESH_MS = 10_000;
 const FAVORITE_MARKETS_STORAGE_KEY = "autobo.favoriteMarkets";
+const RECENT_MARKETS_STORAGE_KEY = "autobo.recentMarkets";
+const RECENT_MARKETS_LIMIT = 8;
 const USER_PREFERENCES_STORAGE_KEY = "autobo.userPreferences.v1";
 const defaultStrategy: StrategySettings = {
   intervalSec: "10",
@@ -230,6 +232,32 @@ function loadFavoriteMarkets() {
       .filter((value): value is string => typeof value === "string")
       .map((value) => value.trim().toUpperCase())
       .filter(isMarketCode);
+  } catch {
+    return [];
+  }
+}
+
+function loadRecentMarkets() {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const storedValue = window.localStorage.getItem(RECENT_MARKETS_STORAGE_KEY);
+    if (!storedValue) {
+      return [];
+    }
+
+    const parsedValue = JSON.parse(storedValue);
+    if (!Array.isArray(parsedValue)) {
+      return [];
+    }
+
+    return parsedValue
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim().toUpperCase())
+      .filter(isMarketCode)
+      .slice(0, RECENT_MARKETS_LIMIT);
   } catch {
     return [];
   }
@@ -653,6 +681,7 @@ function App() {
   const [marketFilter, setMarketFilter] = useState<MarketFilter>(initialPreferences.marketFilter);
   const [marketSearch, setMarketSearch] = useState(initialPreferences.marketSearch);
   const [favoriteMarkets, setFavoriteMarkets] = useState<string[]>(loadFavoriteMarkets);
+  const [recentMarkets, setRecentMarkets] = useState<string[]>(loadRecentMarkets);
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [marketSort, setMarketSort] = useState<MarketSort>(initialPreferences.marketSort);
   const [marketsLoading, setMarketsLoading] = useState(false);
@@ -679,6 +708,18 @@ function App() {
   const hasSelectedMarketWarning =
     selectedMarketInfo?.market_warning === "CAUTION" || selectedMarketInfo?.market_event?.warning === true;
   const favoriteMarketSet = useMemo(() => new Set(favoriteMarkets), [favoriteMarkets]);
+  const recentMarketItems = useMemo(
+    () =>
+      recentMarkets.map((marketCode) => {
+        const marketInfo = markets.find((item) => item.market === marketCode);
+        return {
+          market: marketCode,
+          name: marketInfo?.korean_name ?? marketCode,
+          ticker: marketTickers[marketCode],
+        };
+      }),
+    [marketTickers, markets, recentMarkets],
+  );
   const emptyMarketMessage = showFavoritesOnly
     ? favoriteMarkets.length === 0
       ? "즐겨찾기한 종목이 없습니다."
@@ -699,6 +740,9 @@ function App() {
 
       return [...current, marketCode].sort((left, right) => left.localeCompare(right));
     });
+  }, []);
+  const clearRecentMarkets = useCallback(() => {
+    setRecentMarkets([]);
   }, []);
   const activeManualOrderPreset = useMemo<ManualOrderPreset | null>(() => {
     if (manualOrder.ord_type === "limit") {
@@ -795,6 +839,24 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(FAVORITE_MARKETS_STORAGE_KEY, JSON.stringify(favoriteMarkets));
   }, [favoriteMarkets]);
+
+  useEffect(() => {
+    if (!isMarketCode(normalizedMarket)) {
+      return;
+    }
+
+    setRecentMarkets((current) => {
+      if (current[0] === normalizedMarket) {
+        return current;
+      }
+
+      return [normalizedMarket, ...current.filter((item) => item !== normalizedMarket)].slice(0, RECENT_MARKETS_LIMIT);
+    });
+  }, [normalizedMarket]);
+
+  useEffect(() => {
+    window.localStorage.setItem(RECENT_MARKETS_STORAGE_KEY, JSON.stringify(recentMarkets));
+  }, [recentMarkets]);
 
   useEffect(() => {
     saveUserPreferences({
@@ -1293,6 +1355,37 @@ function App() {
               onChange={(event) => setMarketSearch(event.currentTarget.value)}
             />
           </label>
+          {recentMarketItems.length > 0 ? (
+            <div className="recent-market-strip" aria-label="Recent markets">
+              <div className="recent-market-strip-header">
+                <span>Recent</span>
+                <button className="text-button" type="button" onClick={clearRecentMarkets}>
+                  Clear
+                </button>
+              </div>
+              <div className="recent-market-buttons">
+                {recentMarketItems.map((item) => (
+                  <button
+                    className={item.market === normalizedMarket ? "selected" : ""}
+                    key={item.market}
+                    type="button"
+                    aria-pressed={item.market === normalizedMarket}
+                    title={item.market}
+                    onClick={() => setMarket(item.market)}
+                  >
+                    <span>{item.name}</span>
+                    <code>{item.market}</code>
+                    {item.ticker ? (
+                      <em className={item.ticker.signed_change_price >= 0 ? "up" : "down"}>
+                        {item.ticker.signed_change_rate >= 0 ? "+" : ""}
+                        {percentFormat.format(item.ticker.signed_change_rate * 100)}%
+                      </em>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <div className="segmented-control" aria-label="마켓 필터">
             {marketFilters.map((item) => (
               <button
