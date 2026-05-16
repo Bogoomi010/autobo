@@ -269,6 +269,37 @@ h2 {
   color: #ffffff;
 }
 
+.quick-fill-panel {
+  align-items: start;
+  background: #f6f9fb;
+  border: 1px solid #dce4ea;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.quick-buy-amounts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.quick-fill-panel .subtle-button {
+  min-height: 34px;
+  padding: 7px 9px;
+}
+
+.order-summary {
+  background: #edf8fa;
+  border: 1px solid #cfe0e5;
+  border-radius: 6px;
+  color: #155f6f;
+  font-size: 0.84rem;
+  font-weight: 800;
+  padding: 9px 10px;
+}
+
 .market-list-meta,
 .chart-toolbar,
 .chart-heading-meta {

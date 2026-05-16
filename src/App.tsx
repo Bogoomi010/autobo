@@ -152,6 +152,7 @@ const chartTimeframes: { value: ChartTimeframe; label: string }[] = [
   { value: "1y", label: "년" },
 ];
 
+const manualQuickBuyAmounts = [10000, 50000, 100000, 500000];
 const numberFormat = new Intl.NumberFormat("ko-KR");
 const percentFormat = new Intl.NumberFormat("ko-KR", {
   maximumFractionDigits: 2,
@@ -715,6 +716,21 @@ function App() {
 
     return null;
   }, [manualOrder.ord_type, manualOrder.side]);
+  const manualQuoteCurrency = normalizedMarket.split("-")[0] || "KRW";
+  const manualOrderSummary = useMemo(() => {
+    const price = Number(manualOrder.price);
+    const volume = Number(manualOrder.volume);
+
+    if (manualOrder.side === "bid" && manualOrder.ord_type === "price" && Number.isFinite(price) && price > 0) {
+      return `시장가 매수금액 ${numberFormat.format(price)} ${manualQuoteCurrency}`;
+    }
+
+    if (manualOrder.ord_type === "limit" && Number.isFinite(price) && price > 0 && Number.isFinite(volume) && volume > 0) {
+      return `예상 주문금액 ${numberFormat.format(Math.round(price * volume))} ${manualQuoteCurrency}`;
+    }
+
+    return null;
+  }, [manualOrder.ord_type, manualOrder.price, manualOrder.side, manualOrder.volume, manualQuoteCurrency]);
   const applyManualOrderPreset = useCallback(
     (preset: ManualOrderPreset) => {
       setManualOrder((current) => {
@@ -746,6 +762,32 @@ function App() {
           ord_type: "limit",
         };
       });
+    },
+    [normalizedMarket],
+  );
+  const applyTickerPriceToManualOrder = useCallback(() => {
+    if (!ticker || !Number.isFinite(ticker.trade_price)) {
+      return;
+    }
+
+    setManualOrder((current) => ({
+      ...current,
+      market: normalizedMarket,
+      price: String(ticker.trade_price),
+      ord_type: "limit",
+    }));
+  }, [normalizedMarket, ticker]);
+  const applyQuickBuyAmount = useCallback(
+    (amount: number) => {
+      setManualOrder((current) => ({
+        ...current,
+        market: normalizedMarket,
+        side: "bid",
+        volume: "",
+        price: String(amount),
+        ord_type: "price",
+        time_in_force: "",
+      }));
     },
     [normalizedMarket],
   );
@@ -1597,6 +1639,25 @@ function App() {
               시장가 매도
             </button>
           </div>
+          <div className="quick-fill-panel" aria-label="수동 주문 빠른 입력">
+            <button
+              className="subtle-button"
+              type="button"
+              disabled={!ticker || !Number.isFinite(ticker.trade_price)}
+              onClick={applyTickerPriceToManualOrder}
+            >
+              <BarChart3 size={15} />
+              현재가 지정가
+            </button>
+            <div className="quick-buy-amounts">
+              {manualQuickBuyAmounts.map((amount) => (
+                <button className="subtle-button" type="button" key={amount} onClick={() => applyQuickBuyAmount(amount)}>
+                  <Wallet size={15} />
+                  {numberFormat.format(amount)} KRW
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="form-grid">
             <label>
               side
@@ -1677,6 +1738,7 @@ function App() {
               </select>
             </label>
           </div>
+          {manualOrderSummary ? <div className="order-summary">{manualOrderSummary}</div> : null}
           <button className="primary-button" type="button" disabled={busy || (!dryRun && !isKeyReady)} onClick={handleManualOrder}>
             <Send size={17} />
             주문 전송
