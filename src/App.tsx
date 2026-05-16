@@ -161,6 +161,9 @@ const ASSET_WINDOW_LABEL = "asset";
 const CHART_AUTO_REFRESH_MS = 15_000;
 const MARKET_TICKER_REFRESH_MS = 10_000;
 const FAVORITE_MARKETS_STORAGE_KEY = "autobo.favoriteMarkets";
+const RECENT_MARKETS_STORAGE_KEY = "autobo.recentMarkets.v1";
+const RECENT_MARKETS_LIMIT = 8;
+const QUICK_MARKET_DOCK_LIMIT = 12;
 const USER_PREFERENCES_STORAGE_KEY = "autobo.userPreferences.v1";
 const defaultStrategy: StrategySettings = {
   intervalSec: "10",
@@ -230,6 +233,33 @@ function loadFavoriteMarkets() {
       .filter((value): value is string => typeof value === "string")
       .map((value) => value.trim().toUpperCase())
       .filter(isMarketCode);
+  } catch {
+    return [];
+  }
+}
+
+function loadRecentMarkets() {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const storedValue = window.localStorage.getItem(RECENT_MARKETS_STORAGE_KEY);
+    if (!storedValue) {
+      return [];
+    }
+
+    const parsedValue = JSON.parse(storedValue);
+    if (!Array.isArray(parsedValue)) {
+      return [];
+    }
+
+    return parsedValue
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim().toUpperCase())
+      .filter(isMarketCode)
+      .filter((value, index, values) => values.indexOf(value) === index)
+      .slice(0, RECENT_MARKETS_LIMIT);
   } catch {
     return [];
   }
@@ -653,6 +683,7 @@ function App() {
   const [marketFilter, setMarketFilter] = useState<MarketFilter>(initialPreferences.marketFilter);
   const [marketSearch, setMarketSearch] = useState(initialPreferences.marketSearch);
   const [favoriteMarkets, setFavoriteMarkets] = useState<string[]>(loadFavoriteMarkets);
+  const [recentMarkets, setRecentMarkets] = useState<string[]>(loadRecentMarkets);
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [marketSort, setMarketSort] = useState<MarketSort>(initialPreferences.marketSort);
   const [marketsLoading, setMarketsLoading] = useState(false);
@@ -679,6 +710,26 @@ function App() {
   const hasSelectedMarketWarning =
     selectedMarketInfo?.market_warning === "CAUTION" || selectedMarketInfo?.market_event?.warning === true;
   const favoriteMarketSet = useMemo(() => new Set(favoriteMarkets), [favoriteMarkets]);
+  const quickMarketItems = useMemo(() => {
+    const seen = new Set<string>();
+    const marketInfoMap = new Map(markets.map((item) => [item.market, item]));
+    const candidates = [...recentMarkets, ...favoriteMarkets].filter((marketCode) => {
+      if (seen.has(marketCode)) {
+        return false;
+      }
+
+      seen.add(marketCode);
+      return true;
+    });
+
+    return candidates.slice(0, QUICK_MARKET_DOCK_LIMIT).map((marketCode) => ({
+      market: marketCode,
+      info: marketInfoMap.get(marketCode) ?? null,
+      ticker: marketTickers[marketCode] ?? null,
+      isFavorite: favoriteMarketSet.has(marketCode),
+      isRecent: recentMarkets.includes(marketCode),
+    }));
+  }, [favoriteMarketSet, favoriteMarkets, marketTickers, markets, recentMarkets]);
   const emptyMarketMessage = showFavoritesOnly
     ? favoriteMarkets.length === 0
       ? "즐겨찾기한 종목이 없습니다."
@@ -699,6 +750,9 @@ function App() {
 
       return [...current, marketCode].sort((left, right) => left.localeCompare(right));
     });
+  }, []);
+  const clearRecentMarkets = useCallback(() => {
+    setRecentMarkets([]);
   }, []);
   const activeManualOrderPreset = useMemo<ManualOrderPreset | null>(() => {
     if (manualOrder.ord_type === "limit") {
@@ -795,6 +849,33 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(FAVORITE_MARKETS_STORAGE_KEY, JSON.stringify(favoriteMarkets));
   }, [favoriteMarkets]);
+
+  useEffect(() => {
+    if (!isMarketCode(normalizedMarket)) {
+      return;
+    }
+
+    if (markets.length > 0 && !selectedMarketInfo) {
+      return;
+    }
+
+    setRecentMarkets((current) => {
+      if (current[0] === normalizedMarket) {
+        return current;
+      }
+
+      return [normalizedMarket, ...current.filter((item) => item !== normalizedMarket)].slice(0, RECENT_MARKETS_LIMIT);
+    });
+  }, [markets.length, normalizedMarket, selectedMarketInfo]);
+
+  useEffect(() => {
+    if (recentMarkets.length === 0) {
+      window.localStorage.removeItem(RECENT_MARKETS_STORAGE_KEY);
+      return;
+    }
+
+    window.localStorage.setItem(RECENT_MARKETS_STORAGE_KEY, JSON.stringify(recentMarkets));
+  }, [recentMarkets]);
 
   useEffect(() => {
     saveUserPreferences({
@@ -1278,6 +1359,61 @@ function App() {
           갱신
         </button>
       </section>
+
+      {quickMarketItems.length > 0 ? (
+        <section className="quick-market-dock" aria-label="빠른 종목 바로가기">
+          <div className="quick-market-heading">
+            <span>빠른 종목</span>
+            {recentMarkets.length > 0 ? (
+              <button className="text-button" type="button" onClick={clearRecentMarkets}>
+                <RotateCcw size={14} />
+                최근 초기화
+              </button>
+            ) : null}
+          </div>
+          <div className="quick-market-list">
+            {quickMarketItems.map((item) => {
+              const isSelected = item.market === normalizedMarket;
+
+              return (
+                <button
+                  className={`quick-market-button ${isSelected ? "selected" : ""}`}
+                  key={item.market}
+                  type="button"
+                  aria-pressed={isSelected}
+                  onClick={() => setMarket(item.market)}
+                >
+                  <span className="quick-market-name">
+                    <strong>{item.info?.korean_name ?? item.market}</strong>
+                    <em>{item.market}</em>
+                  </span>
+                  <span className="quick-market-meta">
+                    {item.ticker ? (
+                      <>
+                        <strong className={item.ticker.signed_change_price >= 0 ? "up" : "down"}>
+                          {item.ticker.signed_change_rate >= 0 ? "+" : ""}
+                          {percentFormat.format(item.ticker.signed_change_rate * 100)}%
+                        </strong>
+                        <em>{formatMarketPrice(item.market, item.ticker.trade_price)}</em>
+                      </>
+                    ) : (
+                      <>
+                        <strong>-</strong>
+                        <em>{item.isFavorite && !item.isRecent ? "즐겨찾기" : "최근"}</em>
+                      </>
+                    )}
+                  </span>
+                  {item.isFavorite ? (
+                    <span className="quick-market-star" aria-label="즐겨찾기">
+                      <Star size={13} fill="currentColor" />
+                    </span>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
 
       <section className="market-chart-grid">
         <article className="panel market-list-panel">
