@@ -96,6 +96,14 @@ type MarketFilter = "KRW" | "BTC" | "USDT" | "ALL";
 type MarketSortMode = "price" | "changeRate";
 type SortDirection = "desc" | "asc";
 type ManualOrderPreset = "limit" | "marketBuy" | "marketSell";
+type ManualOrderValidation = {
+  isValid: boolean;
+  title: string;
+  summary: string;
+  estimate: string;
+  errors: string[];
+  warnings: string[];
+};
 
 type StrategySettings = {
   intervalSec: string;
@@ -405,6 +413,160 @@ function formatMarketPrice(market: string, price: number) {
   });
 
   return `${formattedPrice} ${quoteCurrency}`;
+}
+
+function parsePositiveDecimal(value?: string | null) {
+  const text = value?.trim() ?? "";
+  if (text === "") {
+    return null;
+  }
+
+  const numberValue = Number(text);
+  return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : null;
+}
+
+function formatOrderAmount(value: number, currency: string) {
+  return `${value.toLocaleString("ko-KR", {
+    maximumFractionDigits: currency === "KRW" ? 1 : 8,
+  })} ${currency}`;
+}
+
+function getManualOrderValidation(order: OrderRequest, ticker: Ticker | null): ManualOrderValidation {
+  const market = order.market.trim().toUpperCase();
+  const [quoteCurrency = "", baseCurrency = ""] = market.split("-");
+  const price = parsePositiveDecimal(order.price);
+  const volume = parsePositiveDecimal(order.volume);
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  let summary = `${market || "종목"} ${order.side}/${order.ord_type}`;
+  let estimate = "입력값을 채우면 예상 기준 금액을 표시합니다.";
+
+  if (!isMarketCode(market)) {
+    errors.push("종목 코드는 KRW-BTC 형식이어야 합니다.");
+  }
+
+  if (order.ord_type === "limit") {
+    if (price === null) {
+      errors.push("지정가 주문은 가격이 필요합니다.");
+    }
+    if (volume === null) {
+      errors.push("지정가 주문은 수량이 필요합니다.");
+    }
+    if (price !== null && volume !== null) {
+      estimate = `예상 주문금액 ${formatOrderAmount(price * volume, quoteCurrency)}`;
+      summary = `${volume.toLocaleString("ko-KR", { maximumFractionDigits: 8 })} ${baseCurrency} @ ${formatOrderAmount(price, quoteCurrency)}`;
+    }
+  }
+
+  if (order.ord_type === "price") {
+    if (order.side !== "bid") {
+      errors.push("시장가 매수(price)는 bid와 함께 사용해야 합니다.");
+    }
+    if (price === null) {
+      errors.push("시장가 매수는 매수금액이 필요합니다.");
+    }
+    if (volume !== null) {
+      warnings.push("시장가 매수에서는 수량 입력값이 전송되지 않습니다.");
+    }
+    if (price !== null) {
+      estimate = `매수금액 ${formatOrderAmount(price, quoteCurrency)}`;
+      summary = `${formatOrderAmount(price, quoteCurrency)} 시장가 매수`;
+    }
+  }
+
+  if (order.ord_type === "market") {
+    if (order.side !== "ask") {
+      errors.push("시장가 매도(market)는 ask와 함께 사용해야 합니다.");
+    }
+    if (volume === null) {
+      errors.push("시장가 매도는 수량이 필요합니다.");
+    }
+    if (price !== null) {
+      warnings.push("시장가 매도에서는 가격 입력값이 전송되지 않습니다.");
+    }
+    if (volume !== null) {
+      const currentPrice = ticker?.trade_price;
+      estimate =
+        currentPrice && Number.isFinite(currentPrice)
+          ? `현재가 기준 약 ${formatOrderAmount(volume * currentPrice, quoteCurrency)}`
+          : "최신 시세 갱신 후 예상 금액을 확인할 수 있습니다.";
+      summary = `${volume.toLocaleString("ko-KR", { maximumFractionDigits: 8 })} ${baseCurrency} 시장가 매도`;
+    }
+  }
+
+  if (order.ord_type === "best") {
+    if (order.side === "bid") {
+      if (price === null) {
+        errors.push("최유리 매수는 가격/매수금액이 필요합니다.");
+      }
+      if (volume !== null) {
+        warnings.push("최유리 매수에서는 수량 대신 가격/매수금액을 확인하세요.");
+      }
+      if (price !== null) {
+        estimate = `최유리 매수금액 ${formatOrderAmount(price, quoteCurrency)}`;
+        summary = `${formatOrderAmount(price, quoteCurrency)} 최유리 매수`;
+      }
+    } else {
+      if (volume === null) {
+        errors.push("최유리 매도는 수량이 필요합니다.");
+      }
+      if (price !== null) {
+        warnings.push("최유리 매도에서는 가격 입력값이 전송되지 않습니다.");
+      }
+      if (volume !== null) {
+        const currentPrice = ticker?.trade_price;
+        estimate =
+          currentPrice && Number.isFinite(currentPrice)
+            ? `현재가 기준 약 ${formatOrderAmount(volume * currentPrice, quoteCurrency)}`
+            : "최신 시세 갱신 후 예상 금액을 확인할 수 있습니다.";
+        summary = `${volume.toLocaleString("ko-KR", { maximumFractionDigits: 8 })} ${baseCurrency} 최유리 매도`;
+      }
+    }
+  }
+
+  return {
+    isValid: errors.length === 0,
+    title: errors.length === 0 ? "전송 가능" : "전송 전 확인 필요",
+    summary,
+    estimate,
+    errors,
+    warnings,
+  };
+}
+
+function normalizeManualOrder(order: OrderRequest): OrderRequest {
+  const normalizedOrder: OrderRequest = {
+    ...order,
+    market: order.market.trim().toUpperCase(),
+    volume: order.volume?.trim() || null,
+    price: order.price?.trim() || null,
+    identifier: order.identifier?.trim() || null,
+    time_in_force: order.time_in_force?.trim() || null,
+  };
+
+  if (normalizedOrder.ord_type === "price") {
+    return {
+      ...normalizedOrder,
+      volume: null,
+      time_in_force: null,
+    };
+  }
+
+  if (normalizedOrder.ord_type === "market") {
+    return {
+      ...normalizedOrder,
+      price: null,
+      time_in_force: null,
+    };
+  }
+
+  if (normalizedOrder.ord_type === "best") {
+    return normalizedOrder.side === "bid"
+      ? { ...normalizedOrder, volume: null }
+      : { ...normalizedOrder, price: null };
+  }
+
+  return normalizedOrder;
 }
 
 function parseAssetAmount(value: string) {
@@ -759,6 +921,10 @@ function App() {
 
     return null;
   }, [manualOrder.ord_type, manualOrder.side]);
+  const manualOrderValidation = useMemo(
+    () => getManualOrderValidation(manualOrder, ticker),
+    [manualOrder, ticker],
+  );
   const applyManualOrderPreset = useCallback(
     (preset: ManualOrderPreset) => {
       setManualOrder((current) => {
@@ -1280,16 +1446,14 @@ function App() {
   }
 
   async function handleManualOrder() {
+    if (!manualOrderValidation.isValid) {
+      addLog("warn", `주문 입력 확인 필요: ${manualOrderValidation.errors[0] ?? "입력값을 확인하세요."}`);
+      return;
+    }
+
     setBusy(true);
     try {
-      await invokeOrder({
-        ...manualOrder,
-        market: manualOrder.market.trim().toUpperCase(),
-        volume: manualOrder.volume?.trim() || null,
-        price: manualOrder.price?.trim() || null,
-        identifier: manualOrder.identifier?.trim() || null,
-        time_in_force: manualOrder.time_in_force?.trim() || null,
-      });
+      await invokeOrder(normalizeManualOrder(manualOrder));
     } catch (error) {
       addLog("error", String(error));
     } finally {
@@ -1757,7 +1921,33 @@ function App() {
               </select>
             </label>
           </div>
-          <button className="primary-button" type="button" disabled={busy || (!dryRun && !isKeyReady)} onClick={handleManualOrder}>
+          <div className={`order-preview ${manualOrderValidation.isValid ? "ready" : "blocked"}`}>
+            <div>
+              <strong>{manualOrderValidation.title}</strong>
+              <span>{manualOrderValidation.summary}</span>
+            </div>
+            <em>{manualOrderValidation.estimate}</em>
+            {manualOrderValidation.errors.length > 0 ? (
+              <ul>
+                {manualOrderValidation.errors.map((message) => (
+                  <li key={message}>{message}</li>
+                ))}
+              </ul>
+            ) : null}
+            {manualOrderValidation.warnings.length > 0 ? (
+              <ul className="warning-list">
+                {manualOrderValidation.warnings.map((message) => (
+                  <li key={message}>{message}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={busy || (!dryRun && !isKeyReady) || !manualOrderValidation.isValid}
+            onClick={handleManualOrder}
+          >
             <Send size={17} />
             주문 전송
           </button>

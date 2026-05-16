@@ -626,6 +626,75 @@ h2 {
   padding: 10px;
 }
 
+.order-preview {
+  border: 1px solid #dce4ea;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  padding: 11px 12px;
+}
+
+.order-preview.ready {
+  background: #eef8f1;
+  border-color: #b9e3c9;
+}
+
+.order-preview.blocked {
+  background: #fff6ed;
+  border-color: #efc798;
+}
+
+.order-preview div {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.order-preview strong {
+  color: #172026;
+  font-size: 0.88rem;
+}
+
+.order-preview span,
+.order-preview em,
+.order-preview li {
+  color: #51616b;
+  font-size: 0.8rem;
+}
+
+.order-preview span {
+  font-weight: 750;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.order-preview em {
+  font-style: normal;
+  font-weight: 800;
+}
+
+.order-preview ul {
+  color: #9a4a09;
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.order-preview ul li {
+  color: #9a4a09;
+}
+
+.order-preview .warning-list {
+  color: #75511d;
+}
+
+.order-preview .warning-list li {
+  color: #75511d;
+}
+
 .output-panel,
 .log-panel {
   min-height: 360px;
