@@ -583,6 +583,72 @@ h2 {
   padding: 10px;
 }
 
+.order-review {
+  border: 1px solid #dce4ea;
+  border-radius: 6px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.order-review.ready {
+  background: #f0f8f3;
+  border-color: #bfe2cb;
+}
+
+.order-review.blocked {
+  background: #fff7e8;
+  border-color: #e8ca8d;
+}
+
+.order-review > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.order-review strong {
+  color: #172026;
+  font-size: 0.92rem;
+}
+
+.order-review span,
+.order-review p {
+  color: #51616b;
+  font-size: 0.82rem;
+  margin: 0;
+}
+
+.order-review dl {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.order-review dl div {
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(208, 217, 223, 0.8);
+  border-radius: 6px;
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px 8px;
+}
+
+.order-review dt {
+  color: #697983;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.order-review dd {
+  color: #172026;
+  font-size: 0.82rem;
+  font-weight: 800;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .output-panel,
 .log-panel {
   min-height: 360px;

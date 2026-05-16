@@ -129,6 +129,13 @@ type LogEntry = {
   at: string;
 };
 
+type ManualOrderGuard = {
+  valid: boolean;
+  message: string;
+  summary: string;
+  details: { label: string; value: string }[];
+};
+
 const marketFilters: { value: MarketFilter; label: string }[] = [
   { value: "ALL", label: "전체" },
   { value: "KRW", label: "KRW" },
@@ -369,6 +376,136 @@ function formatMarketPrice(market: string, price: number) {
   });
 
   return `${formattedPrice} ${quoteCurrency}`;
+}
+
+function parsePositiveDecimal(value: string | null | undefined) {
+  const trimmedValue = value?.trim() ?? "";
+  if (trimmedValue === "") {
+    return null;
+  }
+
+  const numberValue = Number(trimmedValue);
+  return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : null;
+}
+
+function formatOrderAmount(value: number, currency: string) {
+  return `${value.toLocaleString("ko-KR", {
+    maximumFractionDigits: currency === "KRW" ? 0 : 8,
+  })} ${currency}`;
+}
+
+function getOrderTypeLabel(order: OrderRequest) {
+  if (order.ord_type === "limit") {
+    return "지정가";
+  }
+
+  if (order.side === "bid" && order.ord_type === "price") {
+    return "시장가 매수";
+  }
+
+  if (order.side === "ask" && order.ord_type === "market") {
+    return "시장가 매도";
+  }
+
+  if (order.ord_type === "best") {
+    return "최유리";
+  }
+
+  return order.ord_type;
+}
+
+function buildManualOrderGuard(order: OrderRequest): ManualOrderGuard {
+  const market = order.market.trim().toUpperCase();
+  const price = parsePositiveDecimal(order.price);
+  const volume = parsePositiveDecimal(order.volume);
+  const [quoteCurrency = "", baseCurrency = ""] = market.split("-");
+  const actionLabel = order.side === "bid" ? "매수" : "매도";
+  const orderTypeLabel = getOrderTypeLabel({ ...order, market });
+  const baseDetails = [
+    { label: "마켓", value: market || "-" },
+    { label: "방향", value: actionLabel },
+    { label: "방식", value: orderTypeLabel },
+  ];
+
+  const invalid = (message: string): ManualOrderGuard => ({
+    valid: false,
+    message,
+    summary: "주문 전송 전 입력을 확인하세요.",
+    details: baseDetails,
+  });
+
+  if (!isMarketCode(market)) {
+    return invalid("마켓 코드는 KRW-BTC 형식으로 입력하세요.");
+  }
+
+  if (order.side === "bid" && order.ord_type === "market") {
+    return invalid("Upbit 시장가 매수는 ord_type=price와 매수 금액을 사용합니다.");
+  }
+
+  if (order.side === "ask" && order.ord_type === "price") {
+    return invalid("Upbit 시장가 매도는 ord_type=market과 매도 수량을 사용합니다.");
+  }
+
+  if (order.ord_type === "limit") {
+    if (price === null) {
+      return invalid("지정가 주문은 가격을 0보다 크게 입력해야 합니다.");
+    }
+
+    if (volume === null) {
+      return invalid("지정가 주문은 수량을 0보다 크게 입력해야 합니다.");
+    }
+
+    return {
+      valid: true,
+      message: "주문 전송이 가능합니다.",
+      summary: `${market} ${actionLabel} ${formatOrderAmount(price * volume, quoteCurrency)}`,
+      details: [
+        ...baseDetails,
+        { label: "가격", value: formatOrderAmount(price, quoteCurrency) },
+        { label: "수량", value: formatOrderAmount(volume, baseCurrency) },
+        { label: "예상 규모", value: formatOrderAmount(price * volume, quoteCurrency) },
+      ],
+    };
+  }
+
+  if (order.side === "bid" && order.ord_type === "price") {
+    if (price === null) {
+      return invalid("시장가 매수는 매수 금액을 0보다 크게 입력해야 합니다.");
+    }
+
+    return {
+      valid: true,
+      message: "주문 전송이 가능합니다.",
+      summary: `${market} 시장가 매수 ${formatOrderAmount(price, quoteCurrency)}`,
+      details: [
+        ...baseDetails,
+        { label: "매수 금액", value: formatOrderAmount(price, quoteCurrency) },
+      ],
+    };
+  }
+
+  if (order.side === "ask" && order.ord_type === "market") {
+    if (volume === null) {
+      return invalid("시장가 매도는 매도 수량을 0보다 크게 입력해야 합니다.");
+    }
+
+    return {
+      valid: true,
+      message: "주문 전송이 가능합니다.",
+      summary: `${market} 시장가 매도 ${formatOrderAmount(volume, baseCurrency)}`,
+      details: [
+        ...baseDetails,
+        { label: "매도 수량", value: formatOrderAmount(volume, baseCurrency) },
+      ],
+    };
+  }
+
+  return {
+    valid: true,
+    message: "주문 전송이 가능합니다.",
+    summary: `${market} ${actionLabel} ${orderTypeLabel}`,
+    details: baseDetails,
+  };
 }
 
 function parseAssetAmount(value: string) {
@@ -715,6 +852,7 @@ function App() {
 
     return null;
   }, [manualOrder.ord_type, manualOrder.side]);
+  const manualOrderGuard = useMemo(() => buildManualOrderGuard(manualOrder), [manualOrder]);
   const applyManualOrderPreset = useCallback(
     (preset: ManualOrderPreset) => {
       setManualOrder((current) => {
@@ -1215,6 +1353,11 @@ function App() {
   }
 
   async function handleManualOrder() {
+    if (!manualOrderGuard.valid) {
+      addLog("warn", manualOrderGuard.message);
+      return;
+    }
+
     setBusy(true);
     try {
       await invokeOrder({
@@ -1677,7 +1820,27 @@ function App() {
               </select>
             </label>
           </div>
-          <button className="primary-button" type="button" disabled={busy || (!dryRun && !isKeyReady)} onClick={handleManualOrder}>
+          <div className={`order-review ${manualOrderGuard.valid ? "ready" : "blocked"}`}>
+            <div>
+              <strong>주문 검토</strong>
+              <span>{manualOrderGuard.summary}</span>
+            </div>
+            <dl>
+              {manualOrderGuard.details.map((item) => (
+                <div key={item.label}>
+                  <dt>{item.label}</dt>
+                  <dd>{item.value}</dd>
+                </div>
+              ))}
+            </dl>
+            <p>{manualOrderGuard.message}</p>
+          </div>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={busy || (!dryRun && !isKeyReady) || !manualOrderGuard.valid}
+            onClick={handleManualOrder}
+          >
             <Send size={17} />
             주문 전송
           </button>
