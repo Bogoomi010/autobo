@@ -172,7 +172,7 @@ h2 {
   border-radius: 8px;
   display: grid;
   gap: 12px;
-  grid-template-columns: 180px 1fr 1fr 130px;
+  grid-template-columns: 180px 1fr 1fr 1fr 130px;
   padding: 14px;
 }
 
@@ -510,6 +510,34 @@ h2 {
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.strategy {
+  align-content: start;
+}
+
+.strategy-metrics {
+  background: #f6f9fb;
+  border: 1px solid #dce4ea;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px 10px;
+  grid-template-columns: minmax(84px, 0.8fr) minmax(0, 1.4fr);
+  padding: 10px;
+}
+
+.strategy-metrics span {
+  color: #697983;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.strategy-metrics strong {
+  color: #172026;
+  font-size: 0.8rem;
+  font-weight: 800;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .primary-button,

@@ -89,6 +89,7 @@
 - Query: `market: string`, `to?: string`, `count?: number`, `cursor?: string`, `days_ago?: number`
 - 구현 메모:
   - 최근 체결 목록 조회용 REST API다. 실시간 전략 입력은 WebSocket `trade` 구독을 우선한다.
+  - Autobo의 실시간 체결량 화면은 KRW 마켓만 `trade` WebSocket으로 구독하고, `trade_volume`과 `trade_price * trade_volume`을 마켓별로 누적한다.
   - `cursor`와 `days_ago`를 함께 쓰는 페이지네이션은 별도 테스트가 필요하다.
 
 ### 현재가 조회
@@ -113,7 +114,7 @@
 - Rate limit: `ticker` 그룹, 초당 최대 10회, IP 단위
 - Query: `quote_currencies: string`
 - 구현 메모:
-  - `quote_currencies`는 `KRW`, `BTC`, `USDT` 같은 호가 통화 필터로 다룬다.
+  - Autobo 화면에서는 KRW 마켓만 사용하므로 `quote_currencies=KRW`로 고정한다.
   - 여러 마켓 전체 스캔에는 유용하지만, 응답 크기와 갱신 주기를 rate limit에 맞춘다.
 
 ### 호가 조회
