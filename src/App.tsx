@@ -14,6 +14,7 @@ import {
   Activity,
   AlertTriangle,
   BarChart3,
+  Calculator,
   ExternalLink,
   KeyRound,
   ListChecks,
@@ -371,6 +372,29 @@ function formatMarketPrice(market: string, price: number) {
   return `${formattedPrice} ${quoteCurrency}`;
 }
 
+function parsePositiveNumber(value: string | null | undefined) {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : null;
+}
+
+function toOrderInputNumber(value: number) {
+  if (!Number.isFinite(value)) {
+    return "";
+  }
+
+  return Number.isInteger(value) ? String(value) : value.toFixed(8).replace(/\.?0+$/, "");
+}
+
+function formatOrderCurrency(value: number | null, currency: string) {
+  if (value === null || !Number.isFinite(value)) {
+    return "-";
+  }
+
+  return `${value.toLocaleString("ko-KR", {
+    maximumFractionDigits: currency === "KRW" ? 0 : 8,
+  })} ${currency}`;
+}
+
 function parseAssetAmount(value: string) {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? numberValue : 0;
@@ -715,6 +739,47 @@ function App() {
 
     return null;
   }, [manualOrder.ord_type, manualOrder.side]);
+  const [quoteCurrency, baseCurrency] = useMemo(() => {
+    const [quote = "", base = ""] = normalizedMarket.split("-");
+    return [quote, base];
+  }, [normalizedMarket]);
+  const manualOrderTradePrice = useMemo(() => {
+    if (ticker?.market === normalizedMarket) {
+      return ticker.trade_price;
+    }
+
+    return marketTickers[normalizedMarket]?.trade_price ?? null;
+  }, [marketTickers, normalizedMarket, ticker]);
+  const manualOrderEstimate = useMemo(() => {
+    const orderPrice = parsePositiveNumber(manualOrder.price);
+    const orderVolume = parsePositiveNumber(manualOrder.volume);
+    const tradePrice = parsePositiveNumber(String(manualOrderTradePrice ?? ""));
+
+    if (manualOrder.side === "bid" && manualOrder.ord_type === "price") {
+      const estimatedVolume = orderPrice !== null && tradePrice !== null ? orderPrice / tradePrice : null;
+      return {
+        label: "예상 매수 수량",
+        value: estimatedVolume === null ? "-" : formatAssetQuantity(estimatedVolume, baseCurrency),
+        hint: orderPrice === null ? "매수금액을 입력하세요." : `${formatOrderCurrency(orderPrice, quoteCurrency)} 기준`,
+      };
+    }
+
+    if (manualOrder.side === "ask" && manualOrder.ord_type === "market") {
+      const estimatedAmount = orderVolume !== null && tradePrice !== null ? orderVolume * tradePrice : null;
+      return {
+        label: "예상 매도 금액",
+        value: formatOrderCurrency(estimatedAmount, quoteCurrency),
+        hint: orderVolume === null ? "매도 수량을 입력하세요." : `${formatAssetQuantity(orderVolume, baseCurrency)} 기준`,
+      };
+    }
+
+    const limitAmount = orderPrice !== null && orderVolume !== null ? orderPrice * orderVolume : null;
+    return {
+      label: "예상 주문 금액",
+      value: formatOrderCurrency(limitAmount, quoteCurrency),
+      hint: limitAmount === null ? "가격과 수량을 입력하세요." : `${formatAssetQuantity(orderVolume ?? 0, baseCurrency)} 기준`,
+    };
+  }, [baseCurrency, manualOrder.ord_type, manualOrder.price, manualOrder.side, manualOrder.volume, manualOrderTradePrice, quoteCurrency]);
   const applyManualOrderPreset = useCallback(
     (preset: ManualOrderPreset) => {
       setManualOrder((current) => {
@@ -746,6 +811,32 @@ function App() {
           ord_type: "limit",
         };
       });
+    },
+    [normalizedMarket],
+  );
+  const fillManualOrderCurrentPrice = useCallback(() => {
+    const tradePrice = parsePositiveNumber(String(manualOrderTradePrice ?? ""));
+    if (tradePrice === null) {
+      return;
+    }
+
+    setManualOrder((current) => ({
+      ...current,
+      market: normalizedMarket,
+      price: toOrderInputNumber(tradePrice),
+    }));
+  }, [manualOrderTradePrice, normalizedMarket]);
+  const applyMarketBuyAmount = useCallback(
+    (amount: string) => {
+      setManualOrder((current) => ({
+        ...current,
+        market: normalizedMarket,
+        side: "bid",
+        volume: "",
+        price: amount,
+        ord_type: "price",
+        time_in_force: "",
+      }));
     },
     [normalizedMarket],
   );
@@ -1596,6 +1687,44 @@ function App() {
               <ListChecks size={15} />
               시장가 매도
             </button>
+          </div>
+          <div className="order-helper">
+            <div className="order-helper-title">
+              <Calculator size={16} />
+              <span>주문 도우미</span>
+            </div>
+            <dl className="order-helper-metrics">
+              <div>
+                <dt>현재가</dt>
+                <dd>
+                  {manualOrderTradePrice === null ? "-" : formatMarketPrice(normalizedMarket, manualOrderTradePrice)}
+                </dd>
+              </div>
+              <div>
+                <dt>{manualOrderEstimate.label}</dt>
+                <dd>{manualOrderEstimate.value}</dd>
+              </div>
+            </dl>
+            <div className="order-helper-actions">
+              <button
+                className="subtle-button"
+                type="button"
+                disabled={manualOrderTradePrice === null}
+                onClick={fillManualOrderCurrentPrice}
+              >
+                현재가 입력
+              </button>
+              <button className="subtle-button" type="button" onClick={() => applyMarketBuyAmount("10000")}>
+                1만원 매수
+              </button>
+              <button className="subtle-button" type="button" onClick={() => applyMarketBuyAmount("50000")}>
+                5만원 매수
+              </button>
+              <button className="subtle-button" type="button" onClick={() => applyMarketBuyAmount("100000")}>
+                10만원 매수
+              </button>
+            </div>
+            <p className="order-helper-hint">{manualOrderEstimate.hint}</p>
           </div>
           <div className="form-grid">
             <label>

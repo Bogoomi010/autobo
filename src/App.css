@@ -269,6 +269,73 @@ h2 {
   color: #ffffff;
 }
 
+.order-helper {
+  background: #f6f9fb;
+  border: 1px solid #dce4ea;
+  border-radius: 6px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.order-helper-title {
+  align-items: center;
+  color: #155f6f;
+  display: flex;
+  font-size: 0.84rem;
+  font-weight: 850;
+  gap: 7px;
+}
+
+.order-helper-metrics {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.order-helper-metrics div {
+  background: #ffffff;
+  border: 1px solid #e1e8ed;
+  border-radius: 6px;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 10px;
+}
+
+.order-helper-metrics dt {
+  color: #697983;
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.order-helper-metrics dd {
+  color: #172026;
+  font-size: 0.88rem;
+  font-weight: 850;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.order-helper-actions {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.order-helper-actions .subtle-button {
+  min-height: 34px;
+  padding: 6px 8px;
+}
+
+.order-helper-hint {
+  color: #697983;
+  font-size: 0.78rem;
+  font-weight: 700;
+  margin: 0;
+}
+
 .market-list-meta,
 .chart-toolbar,
 .chart-heading-meta {
@@ -833,6 +900,10 @@ h2 {
     grid-template-columns: 1fr;
   }
 
+  .order-helper-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .chart-panel-header,
   .chart-toolbar {
     align-items: stretch;
@@ -862,6 +933,11 @@ h2 {
 
   .asset-card-header,
   .asset-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .order-helper-actions,
+  .order-helper-metrics {
     grid-template-columns: 1fr;
   }
 
