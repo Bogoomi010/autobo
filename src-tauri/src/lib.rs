@@ -1,15 +1,25 @@
+use futures_util::{SinkExt, StreamExt};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha512};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tauri::async_runtime::JoinHandle;
+use tauri::{AppHandle, Emitter};
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 use uuid::Uuid;
 
 const UPBIT_BASE_URL: &str = "https://api.upbit.com";
+const UPBIT_WEBSOCKET_URL: &str = "wss://api.upbit.com/websocket/v1";
 type SessionApiKeys = Mutex<Option<ApiKeys>>;
+type TradeStreamState = Mutex<Option<JoinHandle<()>>>;
+
+struct OrderbookStreamState(Mutex<Option<JoinHandle<()>>>);
 
 #[derive(Debug, Serialize, Deserialize)]
 struct JwtClaims {
@@ -40,6 +50,150 @@ struct OrderRequest {
     identifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     time_in_force: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct UpbitTradeMessage {
+    code: String,
+    trade_price: f64,
+    trade_volume: f64,
+    #[serde(default)]
+    trade_timestamp: Option<i64>,
+    #[serde(default)]
+    ask_bid: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct UpbitOrderbookUnit {
+    ask_price: f64,
+    bid_price: f64,
+    ask_size: f64,
+    bid_size: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct UpbitOrderbookMessage {
+    code: String,
+    #[serde(default)]
+    timestamp: Option<i64>,
+    #[serde(default)]
+    total_ask_size: f64,
+    #[serde(default)]
+    total_bid_size: f64,
+    orderbook_units: Vec<UpbitOrderbookUnit>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct OrderbookSnapshot {
+    market: String,
+    best_ask_price: f64,
+    best_bid_price: f64,
+    best_ask_size: f64,
+    best_bid_size: f64,
+    total_ask_size: f64,
+    total_bid_size: f64,
+    spread: f64,
+    spread_rate: f64,
+    received_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exchange_timestamp: Option<i64>,
+}
+
+impl OrderbookSnapshot {
+    fn from_message(message: UpbitOrderbookMessage) -> Option<Self> {
+        let best_unit = message.orderbook_units.first()?;
+        let mid_price = (best_unit.ask_price + best_unit.bid_price) / 2.0;
+        let spread = best_unit.ask_price - best_unit.bid_price;
+        let spread_rate = if mid_price > 0.0 {
+            spread / mid_price
+        } else {
+            0.0
+        };
+
+        Some(Self {
+            market: message.code,
+            best_ask_price: best_unit.ask_price,
+            best_bid_price: best_unit.bid_price,
+            best_ask_size: best_unit.ask_size,
+            best_bid_size: best_unit.bid_size,
+            total_ask_size: message.total_ask_size,
+            total_bid_size: message.total_bid_size,
+            spread,
+            spread_rate,
+            received_at: unix_timestamp_millis(),
+            exchange_timestamp: message.timestamp,
+        })
+    }
+}
+
+fn unix_timestamp_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TradeVolumeSnapshot {
+    market: String,
+    last_trade_price: f64,
+    last_trade_volume: f64,
+    accumulated_volume: f64,
+    accumulated_trade_value: f64,
+    accumulated_bid_volume: f64,
+    accumulated_ask_volume: f64,
+    accumulated_bid_trade_value: f64,
+    accumulated_ask_trade_value: f64,
+    trade_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_trade_timestamp: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ask_bid: Option<String>,
+}
+
+impl TradeVolumeSnapshot {
+    fn from_trade(message: &UpbitTradeMessage) -> Self {
+        let trade_value = message.trade_price * message.trade_volume;
+        let is_bid = message.ask_bid.as_deref() == Some("BID");
+        let is_ask = message.ask_bid.as_deref() == Some("ASK");
+
+        Self {
+            market: message.code.clone(),
+            last_trade_price: message.trade_price,
+            last_trade_volume: message.trade_volume,
+            accumulated_volume: message.trade_volume,
+            accumulated_trade_value: trade_value,
+            accumulated_bid_volume: if is_bid { message.trade_volume } else { 0.0 },
+            accumulated_ask_volume: if is_ask { message.trade_volume } else { 0.0 },
+            accumulated_bid_trade_value: if is_bid { trade_value } else { 0.0 },
+            accumulated_ask_trade_value: if is_ask { trade_value } else { 0.0 },
+            trade_count: 1,
+            last_trade_timestamp: message.trade_timestamp,
+            ask_bid: message.ask_bid.clone(),
+        }
+    }
+
+    fn add_trade(&mut self, message: &UpbitTradeMessage) {
+        let trade_value = message.trade_price * message.trade_volume;
+        self.last_trade_price = message.trade_price;
+        self.last_trade_volume = message.trade_volume;
+        self.accumulated_volume += message.trade_volume;
+        self.accumulated_trade_value += trade_value;
+        match message.ask_bid.as_deref() {
+            Some("BID") => {
+                self.accumulated_bid_volume += message.trade_volume;
+                self.accumulated_bid_trade_value += trade_value;
+            }
+            Some("ASK") => {
+                self.accumulated_ask_volume += message.trade_volume;
+                self.accumulated_ask_trade_value += trade_value;
+            }
+            _ => {}
+        }
+        self.trade_count += 1;
+        self.last_trade_timestamp = message.trade_timestamp;
+        self.ask_bid = message.ask_bid.clone();
+    }
 }
 
 fn query_hash(query_string: &str) -> String {
@@ -235,6 +389,279 @@ fn require_present(label: &str, value: &Option<String>) -> Result<(), String> {
     Ok(())
 }
 
+fn normalize_krw_markets(markets: Vec<String>) -> Result<Vec<String>, String> {
+    let mut normalized = markets
+        .into_iter()
+        .map(|market| market.trim().to_uppercase())
+        .filter(|market| market.starts_with("KRW-") && market.len() > 4)
+        .collect::<Vec<_>>();
+
+    normalized.sort();
+    normalized.dedup();
+
+    if normalized.is_empty() {
+        return Err("실시간 체결량을 감시할 KRW 마켓이 없습니다.".to_string());
+    }
+
+    Ok(normalized)
+}
+
+fn parse_trade_message(message: Message) -> Result<Option<UpbitTradeMessage>, String> {
+    match message {
+        Message::Text(text) => serde_json::from_str::<UpbitTradeMessage>(&text)
+            .map(Some)
+            .map_err(|error| format!("체결 메시지 파싱 실패: {error}")),
+        Message::Binary(bytes) => serde_json::from_slice::<UpbitTradeMessage>(&bytes)
+            .map(Some)
+            .map_err(|error| format!("체결 메시지 파싱 실패: {error}")),
+        Message::Ping(_) | Message::Pong(_) => Ok(None),
+        Message::Close(_) => Err("체결 WebSocket 연결이 종료되었습니다.".to_string()),
+        _ => Ok(None),
+    }
+}
+
+fn parse_orderbook_message(message: Message) -> Result<Option<OrderbookSnapshot>, String> {
+    let parsed = match message {
+        Message::Text(text) => serde_json::from_str::<UpbitOrderbookMessage>(&text)
+            .map_err(|error| format!("호가 메시지 파싱 실패: {error}"))?,
+        Message::Binary(bytes) => serde_json::from_slice::<UpbitOrderbookMessage>(&bytes)
+            .map_err(|error| format!("호가 메시지 파싱 실패: {error}"))?,
+        Message::Ping(_) | Message::Pong(_) => return Ok(None),
+        Message::Close(_) => return Err("호가 WebSocket 연결이 종료되었습니다.".to_string()),
+        _ => return Ok(None),
+    };
+
+    Ok(OrderbookSnapshot::from_message(parsed))
+}
+
+async fn run_trade_volume_stream(app: AppHandle, markets: Vec<String>) {
+    let mut reconnect_delay = Duration::from_secs(1);
+    let mut snapshots: HashMap<String, TradeVolumeSnapshot> = HashMap::new();
+
+    loop {
+        let connection = connect_async(UPBIT_WEBSOCKET_URL).await;
+        let (mut websocket, _) = match connection {
+            Ok(connection) => connection,
+            Err(error) => {
+                let _ = app.emit(
+                    "trade-volume-status",
+                    format!("체결 WebSocket 연결 실패: {error}"),
+                );
+                tokio::time::sleep(reconnect_delay).await;
+                reconnect_delay = (reconnect_delay * 2).min(Duration::from_secs(30));
+                continue;
+            }
+        };
+
+        reconnect_delay = Duration::from_secs(1);
+        let request = json!([
+            { "ticket": Uuid::new_v4().to_string() },
+            { "type": "trade", "codes": &markets },
+            { "format": "DEFAULT" }
+        ]);
+
+        if let Err(error) = websocket.send(Message::Text(request.to_string())).await {
+            let _ = app.emit(
+                "trade-volume-status",
+                format!("체결 WebSocket 구독 실패: {error}"),
+            );
+            tokio::time::sleep(reconnect_delay).await;
+            continue;
+        }
+
+        let _ = app.emit("trade-volume-status", "체결 WebSocket 연결됨");
+        let mut last_snapshot_emit = Instant::now();
+
+        loop {
+            let message = tokio::time::timeout(Duration::from_secs(1), websocket.next()).await;
+            match message {
+                Ok(Some(Ok(message))) => match parse_trade_message(message) {
+                    Ok(Some(trade)) => {
+                        snapshots
+                            .entry(trade.code.clone())
+                            .and_modify(|snapshot| snapshot.add_trade(&trade))
+                            .or_insert_with(|| TradeVolumeSnapshot::from_trade(&trade));
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let _ = app.emit("trade-volume-status", error);
+                        break;
+                    }
+                },
+                Ok(Some(Err(error))) => {
+                    let _ = app.emit(
+                        "trade-volume-status",
+                        format!("체결 WebSocket 수신 실패: {error}"),
+                    );
+                    break;
+                }
+                Ok(None) => break,
+                Err(_) => {}
+            }
+
+            if !snapshots.is_empty() && last_snapshot_emit.elapsed() >= Duration::from_secs(1) {
+                let payload = markets
+                    .iter()
+                    .filter_map(|market| snapshots.get(market))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let _ = app.emit("trade-volume-snapshot", payload);
+                last_snapshot_emit = Instant::now();
+            }
+        }
+
+        tokio::time::sleep(reconnect_delay).await;
+        reconnect_delay = (reconnect_delay * 2).min(Duration::from_secs(30));
+    }
+}
+
+async fn run_orderbook_stream(app: AppHandle, market: String) {
+    let mut reconnect_delay = Duration::from_secs(1);
+
+    loop {
+        let connection = connect_async(UPBIT_WEBSOCKET_URL).await;
+        let (mut websocket, _) = match connection {
+            Ok(connection) => connection,
+            Err(error) => {
+                let _ = app.emit(
+                    "orderbook-status",
+                    format!("호가 WebSocket 연결 실패: {error}"),
+                );
+                tokio::time::sleep(reconnect_delay).await;
+                reconnect_delay = (reconnect_delay * 2).min(Duration::from_secs(30));
+                continue;
+            }
+        };
+
+        reconnect_delay = Duration::from_secs(1);
+        let request = json!([
+            { "ticket": Uuid::new_v4().to_string() },
+            { "type": "orderbook", "codes": [&market] },
+            { "format": "DEFAULT" }
+        ]);
+
+        if let Err(error) = websocket.send(Message::Text(request.to_string())).await {
+            let _ = app.emit("orderbook-status", format!("호가 WebSocket 구독 실패: {error}"));
+            tokio::time::sleep(reconnect_delay).await;
+            continue;
+        }
+
+        let _ = app.emit("orderbook-status", "호가 WebSocket 연결됨");
+        let mut last_snapshot_emit = Instant::now();
+        let mut latest_snapshot: Option<OrderbookSnapshot> = None;
+
+        loop {
+            let message = tokio::time::timeout(Duration::from_secs(1), websocket.next()).await;
+            match message {
+                Ok(Some(Ok(message))) => match parse_orderbook_message(message) {
+                    Ok(Some(snapshot)) => {
+                        latest_snapshot = Some(snapshot);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let _ = app.emit("orderbook-status", error);
+                        break;
+                    }
+                },
+                Ok(Some(Err(error))) => {
+                    let _ = app.emit("orderbook-status", format!("호가 WebSocket 수신 실패: {error}"));
+                    break;
+                }
+                Ok(None) => break,
+                Err(_) => {}
+            }
+
+            if let Some(snapshot) = latest_snapshot.as_ref() {
+                if last_snapshot_emit.elapsed() >= Duration::from_millis(500) {
+                    let _ = app.emit("orderbook-snapshot", snapshot);
+                    last_snapshot_emit = Instant::now();
+                }
+            }
+        }
+
+        tokio::time::sleep(reconnect_delay).await;
+        reconnect_delay = (reconnect_delay * 2).min(Duration::from_secs(30));
+    }
+}
+
+#[tauri::command]
+async fn start_trade_volume_stream(
+    app: AppHandle,
+    markets: Vec<String>,
+    trade_stream: tauri::State<'_, TradeStreamState>,
+) -> Result<(), String> {
+    let markets = normalize_krw_markets(markets)?;
+    let mut guard = trade_stream
+        .lock()
+        .map_err(|_| "체결 WebSocket 상태를 사용할 수 없습니다.".to_string())?;
+
+    if let Some(handle) = guard.take() {
+        handle.abort();
+    }
+
+    *guard = Some(tauri::async_runtime::spawn(run_trade_volume_stream(
+        app, markets,
+    )));
+    Ok(())
+}
+
+#[tauri::command]
+async fn start_orderbook_stream(
+    app: AppHandle,
+    market: String,
+    orderbook_stream: tauri::State<'_, OrderbookStreamState>,
+) -> Result<(), String> {
+    let market = market.trim().to_uppercase();
+    if !market.starts_with("KRW-") || market.len() <= 4 {
+        return Err("호가를 감시할 KRW 마켓을 선택하세요.".to_string());
+    }
+
+    let mut guard = orderbook_stream
+        .0
+        .lock()
+        .map_err(|_| "호가 WebSocket 상태를 사용할 수 없습니다.".to_string())?;
+
+    if let Some(handle) = guard.take() {
+        handle.abort();
+    }
+
+    *guard = Some(tauri::async_runtime::spawn(run_orderbook_stream(
+        app, market,
+    )));
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_orderbook_stream(
+    orderbook_stream: tauri::State<'_, OrderbookStreamState>,
+) -> Result<(), String> {
+    let mut guard = orderbook_stream
+        .0
+        .lock()
+        .map_err(|_| "호가 WebSocket 상태를 사용할 수 없습니다.".to_string())?;
+
+    if let Some(handle) = guard.take() {
+        handle.abort();
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_trade_volume_stream(
+    trade_stream: tauri::State<'_, TradeStreamState>,
+) -> Result<(), String> {
+    let mut guard = trade_stream
+        .lock()
+        .map_err(|_| "체결 WebSocket 상태를 사용할 수 없습니다.".to_string())?;
+
+    if let Some(handle) = guard.take() {
+        handle.abort();
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 async fn get_ticker(markets: String) -> Result<Value, String> {
     let markets = markets.trim().to_uppercase();
@@ -259,7 +686,11 @@ async fn get_ticker(markets: String) -> Result<Value, String> {
 async fn get_quote_tickers(quote_currencies: String) -> Result<Value, String> {
     let quote_currencies = quote_currencies.trim().to_uppercase();
     if quote_currencies.is_empty() {
-        return Err("조회할 기준 통화를 입력하세요. 예: KRW,BTC,USDT".to_string());
+        return Err("조회할 기준 통화를 입력하세요. 예: KRW".to_string());
+    }
+
+    if quote_currencies != "KRW" {
+        return Err("Autobo는 KRW 마켓 현재가만 조회합니다.".to_string());
     }
 
     let url = format!("{UPBIT_BASE_URL}/v1/ticker/all?quote_currencies={quote_currencies}");
@@ -467,12 +898,18 @@ async fn place_order(
 pub fn run() {
     tauri::Builder::default()
         .manage(Mutex::new(None::<ApiKeys>))
+        .manage(Mutex::new(None::<JoinHandle<()>>))
+        .manage(OrderbookStreamState(Mutex::new(None::<JoinHandle<()>>)))
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_ticker,
             get_quote_tickers,
             get_markets,
             get_candles,
+            start_trade_volume_stream,
+            stop_trade_volume_stream,
+            start_orderbook_stream,
+            stop_orderbook_stream,
             connect_upbitkey_account,
             get_session_accounts,
             get_order_chance,

@@ -57,7 +57,37 @@ type Ticker = {
   trade_price: number;
   signed_change_price: number;
   signed_change_rate: number;
+  acc_trade_volume_24h: number;
   acc_trade_price_24h: number;
+};
+
+type TradeVolumeSnapshot = {
+  market: string;
+  last_trade_price: number;
+  last_trade_volume: number;
+  accumulated_volume: number;
+  accumulated_trade_value: number;
+  accumulated_bid_volume?: number;
+  accumulated_ask_volume?: number;
+  accumulated_bid_trade_value?: number;
+  accumulated_ask_trade_value?: number;
+  trade_count: number;
+  last_trade_timestamp?: number | null;
+  ask_bid?: string | null;
+};
+
+type OrderbookSnapshot = {
+  market: string;
+  best_ask_price: number;
+  best_bid_price: number;
+  best_ask_size: number;
+  best_bid_size: number;
+  total_ask_size: number;
+  total_bid_size: number;
+  spread: number;
+  spread_rate: number;
+  received_at: number;
+  exchange_timestamp?: number | null;
 };
 
 type AssetAccount = {
@@ -106,8 +136,7 @@ type ChartTimeframe =
   | "1mo"
   | "1y";
 
-type MarketFilter = "KRW" | "BTC" | "USDT" | "ALL";
-type MarketSortMode = "price" | "changeRate";
+type MarketSortMode = "price" | "changeRate" | "tradeValue";
 type SortDirection = "desc" | "asc";
 type ManualOrderPreset = "limit" | "marketBuy" | "marketSell";
 type ManualOrderValidation = {
@@ -120,12 +149,34 @@ type ManualOrderValidation = {
 };
 
 type StrategySettings = {
+  mode: "price" | "tick";
   intervalSec: string;
   buyBelow: string;
   buyKrw: string;
   sellAbove: string;
   sellVolume: string;
   cooldownSec: string;
+  tickWindowSec: string;
+  momentumTicks: string;
+  buyImbalanceThreshold: string;
+  sellImbalanceThreshold: string;
+  upTickRatioThreshold: string;
+  minTradeValueKrw: string;
+  minOrderKrw: string;
+  maxPositionKrw: string;
+  maxExposureKrw: string;
+  minVolatilityRate: string;
+  maxSpreadRate: string;
+  takeProfitRate: string;
+  stopLossRate: string;
+  dailyStopLossRate: string;
+  lossStreakLimit: string;
+  maxHoldingSec: string;
+  feeRate: string;
+  slippageRate: string;
+  safetyMarginRate: string;
+  staleDataSec: string;
+  maxDailyOrders: string;
 };
 
 type MarketSort = {
@@ -136,7 +187,6 @@ type MarketSort = {
 type UserPreferences = {
   market: string;
   dryRun: boolean;
-  marketFilter: MarketFilter;
   marketSearch: string;
   marketSort: MarketSort;
   chartTimeframe: ChartTimeframe;
@@ -150,13 +200,6 @@ type LogEntry = {
   message: string;
   at: string;
 };
-
-const marketFilters: { value: MarketFilter; label: string }[] = [
-  { value: "ALL", label: "전체" },
-  { value: "KRW", label: "KRW" },
-  { value: "BTC", label: "BTC" },
-  { value: "USDT", label: "USDT" },
-];
 
 const chartTimeframes: { value: ChartTimeframe; label: string }[] = [
   { value: "seconds", label: "초" },
@@ -188,12 +231,34 @@ const RECENT_MARKETS_STORAGE_KEY = "autobo.recentMarkets";
 const USER_PREFERENCES_STORAGE_KEY = "autobo.userPreferences.v1";
 const MAX_RECENT_MARKETS = 8;
 const defaultStrategy: StrategySettings = {
+  mode: "price",
   intervalSec: "10",
   buyBelow: "",
   buyKrw: "10000",
   sellAbove: "",
   sellVolume: "",
   cooldownSec: "60",
+  tickWindowSec: "10",
+  momentumTicks: "8",
+  buyImbalanceThreshold: "58",
+  sellImbalanceThreshold: "58",
+  upTickRatioThreshold: "60",
+  minTradeValueKrw: "5000000",
+  minOrderKrw: "10000",
+  maxPositionKrw: "10000",
+  maxExposureKrw: "10000",
+  minVolatilityRate: "0.05",
+  maxSpreadRate: "0.08",
+  takeProfitRate: "0.25",
+  stopLossRate: "0.2",
+  dailyStopLossRate: "1",
+  lossStreakLimit: "3",
+  maxHoldingSec: "180",
+  feeRate: "0.05",
+  slippageRate: "0.03",
+  safetyMarginRate: "0.04",
+  staleDataSec: "5",
+  maxDailyOrders: "20",
 };
 const defaultManualOrder: OrderRequest = {
   market: "KRW-BTC",
@@ -205,14 +270,64 @@ const defaultManualOrder: OrderRequest = {
   time_in_force: "",
 };
 const defaultMarketSort: MarketSort = {
-  mode: "price",
+  mode: "tradeValue",
   direction: "desc",
 };
 const quickOrderRatios = [25, 50, 100];
+
+type TradeSignalSample = {
+  market: string;
+  at: number;
+  price: number;
+  tradeValue: number;
+  bidTradeValue: number;
+  askTradeValue: number;
+  tradeCount: number;
+  direction: "up" | "down" | "flat";
+};
+
+type TickStrategyStatus = {
+  action: "wait" | "buy" | "sell";
+  reason: string;
+  buyScore: number;
+  sellScore: number;
+  buyImbalanceRate: number;
+  sellImbalanceRate: number;
+  upTickRate: number;
+  consecutiveUpTicks: number;
+  tradeValue: number;
+  spreadRate: number;
+  expectedRequiredRate: number;
+  volatilityRate: number;
+};
+
+type StrategyPosition = {
+  market: string;
+  entryPrice: number;
+  volume: number;
+  quoteAmount: number;
+  enteredAt: number;
+};
+
+type TickStrategyStats = {
+  day: string;
+  trades: number;
+  wins: number;
+  losses: number;
+  consecutiveLosses: number;
+  realizedPnl: number;
+  realizedPnlRate: number;
+};
+
+type OrderChanceConstraints = {
+  bidFeeRate?: number;
+  askFeeRate?: number;
+  minTotalKrw?: number;
+};
+
 const defaultUserPreferences: UserPreferences = {
   market: "KRW-BTC",
   dryRun: true,
-  marketFilter: "ALL",
   marketSearch: "",
   marketSort: defaultMarketSort,
   chartTimeframe: "5m",
@@ -252,7 +367,7 @@ function nowText() {
 }
 
 function isMarketCode(value: string) {
-  return /^[A-Z]+-[A-Z0-9]+$/.test(value);
+  return /^KRW-[A-Z0-9]+$/.test(value);
 }
 
 function loadFavoriteMarkets() {
@@ -337,16 +452,12 @@ function toOrderChance(value: unknown): OrderChance | null {
   };
 }
 
-function isMarketFilter(value: unknown): value is MarketFilter {
-  return marketFilters.some((item) => item.value === value);
-}
-
 function isChartTimeframe(value: unknown): value is ChartTimeframe {
   return chartTimeframes.some((item) => item.value === value);
 }
 
 function isMarketSortMode(value: unknown): value is MarketSortMode {
-  return value === "price" || value === "changeRate";
+  return value === "price" || value === "changeRate" || value === "tradeValue";
 }
 
 function isSortDirection(value: unknown): value is SortDirection {
@@ -359,6 +470,10 @@ function isOrderSide(value: unknown): value is OrderRequest["side"] {
 
 function isOrderType(value: unknown): value is OrderRequest["ord_type"] {
   return value === "limit" || value === "price" || value === "market" || value === "best";
+}
+
+function isStrategyMode(value: unknown): value is StrategySettings["mode"] {
+  return value === "price" || value === "tick";
 }
 
 function stringValue(value: unknown, fallback = "") {
@@ -389,7 +504,6 @@ function loadUserPreferences(): UserPreferences {
     return {
       market: isMarketCode(market) ? market : defaultUserPreferences.market,
       dryRun: typeof parsed.dryRun === "boolean" ? parsed.dryRun : defaultUserPreferences.dryRun,
-      marketFilter: isMarketFilter(parsed.marketFilter) ? parsed.marketFilter : defaultUserPreferences.marketFilter,
       marketSearch: stringValue(parsed.marketSearch),
       marketSort: {
         mode: isMarketSortMode(marketSort.mode) ? marketSort.mode : defaultUserPreferences.marketSort.mode,
@@ -401,12 +515,34 @@ function loadUserPreferences(): UserPreferences {
         ? parsed.chartTimeframe
         : defaultUserPreferences.chartTimeframe,
       strategy: {
+        mode: isStrategyMode(strategy.mode) ? strategy.mode : defaultStrategy.mode,
         intervalSec: stringValue(strategy.intervalSec, defaultStrategy.intervalSec),
         buyBelow: stringValue(strategy.buyBelow),
         buyKrw: stringValue(strategy.buyKrw, defaultStrategy.buyKrw),
         sellAbove: stringValue(strategy.sellAbove),
         sellVolume: stringValue(strategy.sellVolume),
         cooldownSec: stringValue(strategy.cooldownSec, defaultStrategy.cooldownSec),
+        tickWindowSec: stringValue(strategy.tickWindowSec, defaultStrategy.tickWindowSec),
+        momentumTicks: stringValue(strategy.momentumTicks, defaultStrategy.momentumTicks),
+        buyImbalanceThreshold: stringValue(strategy.buyImbalanceThreshold, defaultStrategy.buyImbalanceThreshold),
+        sellImbalanceThreshold: stringValue(strategy.sellImbalanceThreshold, defaultStrategy.sellImbalanceThreshold),
+        upTickRatioThreshold: stringValue(strategy.upTickRatioThreshold, defaultStrategy.upTickRatioThreshold),
+        minTradeValueKrw: stringValue(strategy.minTradeValueKrw, defaultStrategy.minTradeValueKrw),
+        minOrderKrw: stringValue(strategy.minOrderKrw, defaultStrategy.minOrderKrw),
+        maxPositionKrw: stringValue(strategy.maxPositionKrw, defaultStrategy.maxPositionKrw),
+        maxExposureKrw: stringValue(strategy.maxExposureKrw, defaultStrategy.maxExposureKrw),
+        minVolatilityRate: stringValue(strategy.minVolatilityRate, defaultStrategy.minVolatilityRate),
+        maxSpreadRate: stringValue(strategy.maxSpreadRate, defaultStrategy.maxSpreadRate),
+        takeProfitRate: stringValue(strategy.takeProfitRate, defaultStrategy.takeProfitRate),
+        stopLossRate: stringValue(strategy.stopLossRate, defaultStrategy.stopLossRate),
+        dailyStopLossRate: stringValue(strategy.dailyStopLossRate, defaultStrategy.dailyStopLossRate),
+        lossStreakLimit: stringValue(strategy.lossStreakLimit, defaultStrategy.lossStreakLimit),
+        maxHoldingSec: stringValue(strategy.maxHoldingSec, defaultStrategy.maxHoldingSec),
+        feeRate: stringValue(strategy.feeRate, defaultStrategy.feeRate),
+        slippageRate: stringValue(strategy.slippageRate, defaultStrategy.slippageRate),
+        safetyMarginRate: stringValue(strategy.safetyMarginRate, defaultStrategy.safetyMarginRate),
+        staleDataSec: stringValue(strategy.staleDataSec, defaultStrategy.staleDataSec),
+        maxDailyOrders: stringValue(strategy.maxDailyOrders, defaultStrategy.maxDailyOrders),
       },
       manualOrder: {
         market: isMarketCode(stringValue(manualOrder.market).trim().toUpperCase())
@@ -631,9 +767,9 @@ function toOrderInputNumber(value: number, maximumFractionDigits = 8) {
   return value.toFixed(maximumFractionDigits).replace(/\.?0+$/, "");
 }
 
-function parsePositiveNumber(value: unknown) {
+function parsePositiveNumber(value: unknown, fallback = 0) {
   const parsed = typeof value === "string" || typeof value === "number" ? Number(value) : Number.NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function toInputDecimal(value: number, fractionDigits: number) {
@@ -663,6 +799,117 @@ function formatOrderQuantity(value: number, currency: string) {
   }
 
   return `${value.toLocaleString("ko-KR", { maximumFractionDigits: 8 })} ${currency}`;
+}
+
+function formatTradeVolume(market: string, value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) {
+    return "-";
+  }
+
+  const baseCurrency = market.split("-")[1] ?? "";
+  const formattedValue = value.toLocaleString("ko-KR", {
+    maximumFractionDigits: 8,
+  });
+
+  return `${formattedValue} ${baseCurrency}`;
+}
+
+function formatTradeValue(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) {
+    return "-";
+  }
+
+  return `${Math.round(value).toLocaleString("ko-KR")} KRW`;
+}
+
+function parseNonNegativeNumber(value: unknown, fallback: number) {
+  const nextValue = typeof value === "string" || typeof value === "number" ? Number(value) : Number.NaN;
+  return Number.isFinite(nextValue) && nextValue >= 0 ? nextValue : fallback;
+}
+
+function parseOptionalNumber(value: unknown) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === "string") {
+    const nextValue = Number(value);
+    return Number.isFinite(nextValue) ? nextValue : null;
+  }
+
+  return null;
+}
+
+function percentInputToRate(value: string, fallbackPercent: number) {
+  return parseNonNegativeNumber(value, fallbackPercent) / 100;
+}
+
+function clampRate(value: number) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.min(Math.max(value, 0), 1);
+}
+
+function formatRate(value: number) {
+  if (!Number.isFinite(value)) {
+    return "-";
+  }
+
+  return `${percentFormat.format(value * 100)}%`;
+}
+
+function calculateCandleVolatility(candles: ChartCandle[]) {
+  const recentCandles = candles.slice(-6);
+  if (recentCandles.length === 0) {
+    return 0;
+  }
+
+  const volatilitySum = recentCandles.reduce((sum, candle) => {
+    const close = Number(candle.close);
+    if (!Number.isFinite(close) || close <= 0) {
+      return sum;
+    }
+
+    return sum + (Number(candle.high) - Number(candle.low)) / close;
+  }, 0);
+
+  return volatilitySum / recentCandles.length;
+}
+
+function extractOrderChanceConstraints(value: unknown): OrderChanceConstraints {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  const market = isRecord(value.market) ? value.market : {};
+  const bidPolicy = isRecord(market.bid) ? market.bid : {};
+  const askPolicy = isRecord(market.ask) ? market.ask : {};
+  const bidMinTotal = parseOptionalNumber(bidPolicy.min_total);
+  const askMinTotal = parseOptionalNumber(askPolicy.min_total);
+  const marketMinTotal = parseOptionalNumber(market.min_total);
+  const minCandidates = [bidMinTotal, askMinTotal, marketMinTotal].filter(
+    (item): item is number => item !== null && item > 0,
+  );
+
+  return {
+    bidFeeRate: parseOptionalNumber(value.bid_fee) ?? undefined,
+    askFeeRate: parseOptionalNumber(value.ask_fee) ?? undefined,
+    minTotalKrw: minCandidates.length > 0 ? Math.max(...minCandidates) : undefined,
+  };
+}
+
+function createDefaultTickStrategyStats(): TickStrategyStats {
+  return {
+    day: new Date().toDateString(),
+    trades: 0,
+    wins: 0,
+    losses: 0,
+    consecutiveLosses: 0,
+    realizedPnl: 0,
+    realizedPnlRate: 0,
+  };
 }
 
 function parseAssetAmount(value: string) {
@@ -709,7 +956,7 @@ function getAssetMarket(account: AssetAccount) {
   const currency = account.currency.trim().toUpperCase();
   const unitCurrency = (account.unit_currency || "KRW").trim().toUpperCase();
 
-  if (!currency || currency === unitCurrency) {
+  if (!currency || currency === unitCurrency || unitCurrency !== "KRW") {
     return null;
   }
 
@@ -782,18 +1029,9 @@ function AssetWindow() {
       const nextAccounts = Array.isArray(response) ? response : [];
       setAccounts(nextAccounts);
 
-      const quoteCurrencies = Array.from(
-        new Set(
-          nextAccounts
-            .filter((account) => account.currency.trim().toUpperCase() !== "KRW")
-            .map((account) => (account.unit_currency || "KRW").trim().toUpperCase())
-            .filter(Boolean),
-        ),
-      );
-
       const [tickerResponse, marketResponse] = await Promise.allSettled([
-        quoteCurrencies.length > 0
-          ? invoke<Ticker[]>("get_quote_tickers", { quoteCurrencies: quoteCurrencies.join(",") })
+        nextAccounts.some((account) => account.currency.trim().toUpperCase() !== "KRW")
+          ? invoke<Ticker[]>("get_quote_tickers", { quoteCurrencies: "KRW" })
           : Promise.resolve([]),
         invoke<MarketInfo[]>("get_markets", { isDetails: false }),
       ]);
@@ -972,6 +1210,20 @@ function App() {
   const logIdRef = useRef(1);
   const accountConnectAttemptedRef = useRef(false);
   const dryRunRef = useRef(dryRun);
+  const tradeSignalSamplesRef = useRef<TradeSignalSample[]>([]);
+  const lastTradeSnapshotTotalsRef = useRef<
+    Record<
+      string,
+      {
+        tradeValue: number;
+        bidTradeValue: number;
+        askTradeValue: number;
+        tradeCount: number;
+        price: number;
+      }
+    >
+  >({});
+  const strategyOrderCountRef = useRef({ day: new Date().toDateString(), count: 0 });
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -979,7 +1231,11 @@ function App() {
   const marketTickerRefreshInFlightRef = useRef(false);
   const [markets, setMarkets] = useState<MarketInfo[]>([]);
   const [marketTickers, setMarketTickers] = useState<Record<string, Ticker>>({});
-  const [marketFilter, setMarketFilter] = useState<MarketFilter>(initialPreferences.marketFilter);
+  const [tradeVolumes, setTradeVolumes] = useState<Record<string, TradeVolumeSnapshot>>({});
+  const [orderbooks, setOrderbooks] = useState<Record<string, OrderbookSnapshot>>({});
+  const [tickStrategyStatus, setTickStrategyStatus] = useState<TickStrategyStatus | null>(null);
+  const [strategyPosition, setStrategyPosition] = useState<StrategyPosition | null>(null);
+  const [tickStrategyStats, setTickStrategyStats] = useState<TickStrategyStats>(createDefaultTickStrategyStats);
   const [marketSearch, setMarketSearch] = useState(initialPreferences.marketSearch);
   const [favoriteMarkets, setFavoriteMarkets] = useState<string[]>(loadFavoriteMarkets);
   const [recentMarkets, setRecentMarkets] = useState<string[]>(loadRecentMarkets);
@@ -1012,6 +1268,10 @@ function App() {
     () => chartTimeframes.find((item) => item.value === chartTimeframe)?.label ?? chartTimeframe,
     [chartTimeframe],
   );
+  const selectedTradeVolume = tradeVolumes[normalizedMarket] ?? null;
+  const selectedOrderbook = orderbooks[normalizedMarket] ?? null;
+  const orderChanceConstraints = useMemo(() => extractOrderChanceConstraints(chance), [chance]);
+  const krwMarketCodes = useMemo(() => markets.map((item) => item.market), [markets]);
   const hasSelectedMarketWarning =
     selectedMarketInfo?.market_warning === "CAUTION" || selectedMarketInfo?.market_event?.warning === true;
   const favoriteMarketSet = useMemo(() => new Set(favoriteMarkets), [favoriteMarkets]);
@@ -1333,8 +1593,7 @@ function App() {
     const search = marketSearch.trim().toLowerCase();
 
     const filtered = markets.filter((item) => {
-      const quoteCurrency = item.market.split("-")[0];
-      const matchesFilter = marketFilter === "ALL" || quoteCurrency === marketFilter;
+      const matchesKrwMarket = item.market.startsWith("KRW-");
       const matchesFavorite = !showFavoritesOnly || favoriteMarketSet.has(item.market);
       const matchesSearch =
         search === "" ||
@@ -1342,14 +1601,26 @@ function App() {
         item.korean_name.toLowerCase().includes(search) ||
         item.english_name.toLowerCase().includes(search);
 
-      return matchesFilter && matchesFavorite && matchesSearch;
+      return matchesKrwMarket && matchesFavorite && matchesSearch;
     });
 
     return [...filtered].sort((left, right) => {
       const leftTicker = marketTickers[left.market];
       const rightTicker = marketTickers[right.market];
-      const leftValue = marketSort.mode === "price" ? leftTicker?.trade_price : leftTicker?.signed_change_rate;
-      const rightValue = marketSort.mode === "price" ? rightTicker?.trade_price : rightTicker?.signed_change_rate;
+      const leftVolume = tradeVolumes[left.market];
+      const rightVolume = tradeVolumes[right.market];
+      const leftValue =
+        marketSort.mode === "price"
+          ? leftTicker?.trade_price
+          : marketSort.mode === "changeRate"
+            ? leftTicker?.signed_change_rate
+            : leftVolume?.accumulated_trade_value;
+      const rightValue =
+        marketSort.mode === "price"
+          ? rightTicker?.trade_price
+          : marketSort.mode === "changeRate"
+            ? rightTicker?.signed_change_rate
+            : rightVolume?.accumulated_trade_value;
 
       if (leftValue == null && rightValue == null) {
         return left.market.localeCompare(right.market);
@@ -1366,7 +1637,7 @@ function App() {
       const delta = leftValue - rightValue;
       return marketSort.direction === "desc" ? -delta : delta;
     });
-  }, [favoriteMarketSet, marketFilter, marketSearch, marketSort, marketTickers, markets, showFavoritesOnly]);
+  }, [favoriteMarketSet, marketSearch, marketSort, marketTickers, markets, showFavoritesOnly, tradeVolumes]);
 
   useEffect(() => {
     dryRunRef.current = dryRun;
@@ -1401,7 +1672,6 @@ function App() {
     saveUserPreferences({
       market: normalizedMarket,
       dryRun,
-      marketFilter,
       marketSearch,
       marketSort,
       chartTimeframe,
@@ -1411,7 +1681,7 @@ function App() {
         market: manualOrder.market.trim().toUpperCase(),
       },
     });
-  }, [chartTimeframe, dryRun, manualOrder, marketFilter, marketSearch, marketSort, normalizedMarket, strategy]);
+  }, [chartTimeframe, dryRun, manualOrder, marketSearch, marketSort, normalizedMarket, strategy]);
 
   const addLog = useCallback((level: LogEntry["level"], message: string) => {
     const next: LogEntry = {
@@ -1550,16 +1820,16 @@ function App() {
       const response = await invoke<MarketInfo[]>("get_markets", {
         isDetails: true,
       });
-      setMarkets(response);
+      const krwMarkets = response.filter((item) => item.market.startsWith("KRW-"));
+      setMarkets(krwMarkets);
 
       const fallbackMarket =
-        response.find((item) => item.market === "KRW-BTC") ??
-        response.find((item) => item.market.startsWith("KRW-")) ??
-        response[0];
+        krwMarkets.find((item) => item.market === "KRW-BTC") ??
+        krwMarkets[0];
 
       setMarket((current) => {
         const currentMarket = current.trim().toUpperCase();
-        if (response.some((item) => item.market === currentMarket)) {
+        if (krwMarkets.some((item) => item.market === currentMarket)) {
           return currentMarket;
         }
 
@@ -1579,15 +1849,10 @@ function App() {
       return;
     }
 
-    const quoteCurrencies = Array.from(new Set(markets.map((item) => item.market.split("-")[0]).filter(Boolean))).join(",");
-    if (quoteCurrencies === "") {
-      return;
-    }
-
     marketTickerRefreshInFlightRef.current = true;
     try {
       const response = await invoke<Ticker[]>("get_quote_tickers", {
-        quoteCurrencies,
+        quoteCurrencies: "KRW",
       });
       const nextTickers = response.reduce<Record<string, Ticker>>((result, ticker) => {
         result[ticker.market] = ticker;
@@ -1688,21 +1953,458 @@ function App() {
     addLog("info", "잔고와 주문 가능정보를 갱신했습니다.");
   }, [addLog, isKeyReady, normalizedMarket]);
 
+  const resetDailyStrategyOrderCount = useCallback(() => {
+    const today = new Date().toDateString();
+    if (strategyOrderCountRef.current.day !== today) {
+      strategyOrderCountRef.current = { day: today, count: 0 };
+    }
+    setTickStrategyStats((current) => (current.day === today ? current : createDefaultTickStrategyStats()));
+  }, []);
+
+  const buildTickStrategyStatus = useCallback(
+    (nextTicker: Ticker): TickStrategyStatus => {
+      const now = Date.now();
+      const windowMs = parsePositiveNumber(strategy.tickWindowSec, 10) * 1000;
+      const samples = tradeSignalSamplesRef.current.filter(
+        (sample) => sample.market === normalizedMarket && sample.at >= now - windowMs,
+      );
+      const tradeValue = samples.reduce((sum, sample) => sum + sample.tradeValue, 0);
+      const bidTradeValue = samples.reduce((sum, sample) => sum + sample.bidTradeValue, 0);
+      const askTradeValue = samples.reduce((sum, sample) => sum + sample.askTradeValue, 0);
+      const momentumTicks = Math.max(Math.floor(parsePositiveNumber(strategy.momentumTicks, 8)), 1);
+      const directionalTicks = samples.filter((sample) => sample.direction !== "flat").slice(-momentumTicks);
+      const upTicks = directionalTicks.filter((sample) => sample.direction === "up").length;
+      const consecutiveUpTicks = [...directionalTicks]
+        .reverse()
+        .findIndex((sample) => sample.direction !== "up");
+      const normalizedConsecutiveUpTicks =
+        consecutiveUpTicks === -1 ? directionalTicks.length : Math.max(consecutiveUpTicks, 0);
+      const buyImbalanceRate = tradeValue > 0 ? bidTradeValue / tradeValue : 0;
+      const sellImbalanceRate = tradeValue > 0 ? askTradeValue / tradeValue : 0;
+      const upTickRate = directionalTicks.length > 0 ? upTicks / directionalTicks.length : 0;
+      const volatilityRate = calculateCandleVolatility(candles);
+      const spreadRate = selectedOrderbook?.spread_rate ?? 1;
+      const configuredFeeRate = percentInputToRate(strategy.feeRate, 0.05);
+      const bidFeeRate = orderChanceConstraints.bidFeeRate ?? configuredFeeRate;
+      const askFeeRate = orderChanceConstraints.askFeeRate ?? configuredFeeRate;
+      const slippageRate = percentInputToRate(strategy.slippageRate, 0.03);
+      const safetyMarginRate = percentInputToRate(strategy.safetyMarginRate, 0.04);
+      const expectedRequiredRate = bidFeeRate + askFeeRate + slippageRate + spreadRate + safetyMarginRate;
+      const minTradeValue = parsePositiveNumber(strategy.minTradeValueKrw, 5_000_000);
+      const minOrderKrw = Math.max(
+        parsePositiveNumber(strategy.minOrderKrw, 10_000),
+        orderChanceConstraints.minTotalKrw ?? 0,
+      );
+      const buyThreshold = percentInputToRate(strategy.buyImbalanceThreshold, 58);
+      const sellThreshold = percentInputToRate(strategy.sellImbalanceThreshold, 58);
+      const upTickThreshold = percentInputToRate(strategy.upTickRatioThreshold, 60);
+      const maxSpreadRate = percentInputToRate(strategy.maxSpreadRate, 0.08);
+      const minVolatilityRate = percentInputToRate(strategy.minVolatilityRate, 0.05);
+      const takeProfitRate = percentInputToRate(strategy.takeProfitRate, 0.25);
+      const liquidityScore = clampRate(tradeValue / minTradeValue);
+      const tradeImbalanceScore = clampRate((buyImbalanceRate - 0.5) / Math.max(buyThreshold - 0.5, 0.01));
+      const upTickScore = clampRate(upTickRate / Math.max(upTickThreshold, 0.01));
+      const spreadScore = selectedOrderbook ? clampRate(1 - spreadRate / Math.max(maxSpreadRate, 0.0001)) : 0;
+      const volatilityScore = clampRate(volatilityRate / Math.max(minVolatilityRate, 0.0001));
+      const orderbookSupportScore = selectedOrderbook
+        ? clampRate(selectedOrderbook.total_bid_size / Math.max(selectedOrderbook.total_bid_size + selectedOrderbook.total_ask_size, 1))
+        : 0;
+      const buyScore =
+        0.3 * tradeImbalanceScore +
+        0.2 * upTickScore +
+        0.2 * orderbookSupportScore +
+        0.1 * liquidityScore +
+        0.1 * volatilityScore +
+        0.1 * spreadScore;
+      const sellScore = clampRate((sellImbalanceRate - 0.5) / Math.max(sellThreshold - 0.5, 0.01));
+
+      if (!selectedOrderbook) {
+        return {
+          action: "wait",
+          reason: "호가 WebSocket 스냅샷 대기",
+          buyScore,
+          sellScore,
+          buyImbalanceRate,
+          sellImbalanceRate,
+          upTickRate,
+          consecutiveUpTicks: normalizedConsecutiveUpTicks,
+          tradeValue,
+          spreadRate,
+          expectedRequiredRate,
+          volatilityRate,
+        };
+      }
+
+      const staleDataMs = parsePositiveNumber(strategy.staleDataSec, 5) * 1000;
+      if (now - selectedOrderbook.received_at > staleDataMs) {
+        return {
+          action: "wait",
+          reason: "호가 데이터 지연",
+          buyScore,
+          sellScore,
+          buyImbalanceRate,
+          sellImbalanceRate,
+          upTickRate,
+          consecutiveUpTicks: normalizedConsecutiveUpTicks,
+          tradeValue,
+          spreadRate,
+          expectedRequiredRate,
+          volatilityRate,
+        };
+      }
+
+      if (hasSelectedMarketWarning) {
+        return {
+          action: "wait",
+          reason: "주의 마켓은 틱 전략 진입 제외",
+          buyScore,
+          sellScore,
+          buyImbalanceRate,
+          sellImbalanceRate,
+          upTickRate,
+          consecutiveUpTicks: normalizedConsecutiveUpTicks,
+          tradeValue,
+          spreadRate,
+          expectedRequiredRate,
+          volatilityRate,
+        };
+      }
+
+      const activePosition = strategyPosition?.market === normalizedMarket ? strategyPosition : null;
+      if (activePosition) {
+        const exitPrice = selectedOrderbook.best_bid_price || nextTicker.trade_price;
+        const grossReturnRate = activePosition.entryPrice > 0 ? (exitPrice - activePosition.entryPrice) / activePosition.entryPrice : 0;
+        const heldMs = now - activePosition.enteredAt;
+        const stopLossRate = percentInputToRate(strategy.stopLossRate, 0.2);
+        const maxHoldingMs = parsePositiveNumber(strategy.maxHoldingSec, 180) * 1000;
+
+        if (grossReturnRate >= takeProfitRate) {
+          return {
+            action: "sell",
+            reason: `익절 조건 충족 ${formatRate(grossReturnRate)}`,
+            buyScore,
+            sellScore,
+            buyImbalanceRate,
+            sellImbalanceRate,
+            upTickRate,
+            consecutiveUpTicks: normalizedConsecutiveUpTicks,
+            tradeValue,
+            spreadRate,
+            expectedRequiredRate,
+            volatilityRate,
+          };
+        }
+
+        if (grossReturnRate <= -stopLossRate) {
+          return {
+            action: "sell",
+            reason: `손절 조건 충족 ${formatRate(grossReturnRate)}`,
+            buyScore,
+            sellScore,
+            buyImbalanceRate,
+            sellImbalanceRate,
+            upTickRate,
+            consecutiveUpTicks: normalizedConsecutiveUpTicks,
+            tradeValue,
+            spreadRate,
+            expectedRequiredRate,
+            volatilityRate,
+          };
+        }
+
+        if (heldMs >= maxHoldingMs) {
+          return {
+            action: "sell",
+            reason: "최대 보유 시간 초과",
+            buyScore,
+            sellScore,
+            buyImbalanceRate,
+            sellImbalanceRate,
+            upTickRate,
+            consecutiveUpTicks: normalizedConsecutiveUpTicks,
+            tradeValue,
+            spreadRate,
+            expectedRequiredRate,
+            volatilityRate,
+          };
+        }
+
+        if (sellImbalanceRate >= sellThreshold) {
+          return {
+            action: "sell",
+            reason: `매도 주도 체결 비율 ${formatRate(sellImbalanceRate)}`,
+            buyScore,
+            sellScore,
+            buyImbalanceRate,
+            sellImbalanceRate,
+            upTickRate,
+            consecutiveUpTicks: normalizedConsecutiveUpTicks,
+            tradeValue,
+            spreadRate,
+            expectedRequiredRate,
+            volatilityRate,
+          };
+        }
+
+        return {
+          action: "wait",
+          reason: `가상 포지션 보유 중, 현재 수익률 ${formatRate(grossReturnRate)}`,
+          buyScore,
+          sellScore,
+          buyImbalanceRate,
+          sellImbalanceRate,
+          upTickRate,
+          consecutiveUpTicks: normalizedConsecutiveUpTicks,
+          tradeValue,
+          spreadRate,
+          expectedRequiredRate,
+          volatilityRate,
+        };
+      }
+
+      if (takeProfitRate <= expectedRequiredRate) {
+        return {
+          action: "wait",
+          reason: "목표 수익률이 비용 조건보다 낮음",
+          buyScore,
+          sellScore,
+          buyImbalanceRate,
+          sellImbalanceRate,
+          upTickRate,
+          consecutiveUpTicks: normalizedConsecutiveUpTicks,
+          tradeValue,
+          spreadRate,
+          expectedRequiredRate,
+          volatilityRate,
+        };
+      }
+
+      const buyKrw = parsePositiveNumber(strategy.buyKrw, 0);
+      const expectedVolume = selectedOrderbook.best_ask_price > 0 ? buyKrw / selectedOrderbook.best_ask_price : 0;
+      const hasEnoughAskSize = selectedOrderbook.best_ask_size >= expectedVolume * 1.5;
+      const maxPositionKrw = parsePositiveNumber(strategy.maxPositionKrw, 10_000);
+      const maxExposureKrw = parsePositiveNumber(strategy.maxExposureKrw, maxPositionKrw);
+      const dailyStopLossRate = percentInputToRate(strategy.dailyStopLossRate, 1);
+      const lossStreakLimit = Math.floor(parsePositiveNumber(strategy.lossStreakLimit, 3));
+      if (tickStrategyStats.realizedPnlRate <= -dailyStopLossRate) {
+        return {
+          action: "wait",
+          reason: `일일 손실 제한 도달 ${formatRate(tickStrategyStats.realizedPnlRate)}`,
+          buyScore,
+          sellScore,
+          buyImbalanceRate,
+          sellImbalanceRate,
+          upTickRate,
+          consecutiveUpTicks: normalizedConsecutiveUpTicks,
+          tradeValue,
+          spreadRate,
+          expectedRequiredRate,
+          volatilityRate,
+        };
+      }
+
+      if (tickStrategyStats.consecutiveLosses >= lossStreakLimit) {
+        return {
+          action: "wait",
+          reason: `연속 손실 제한 도달 ${tickStrategyStats.consecutiveLosses}회`,
+          buyScore,
+          sellScore,
+          buyImbalanceRate,
+          sellImbalanceRate,
+          upTickRate,
+          consecutiveUpTicks: normalizedConsecutiveUpTicks,
+          tradeValue,
+          spreadRate,
+          expectedRequiredRate,
+          volatilityRate,
+        };
+      }
+
+      if (buyKrw < minOrderKrw) {
+        return {
+          action: "wait",
+          reason: `매수 금액이 최소 주문 금액보다 작음 ${formatTradeValue(minOrderKrw)}`,
+          buyScore,
+          sellScore,
+          buyImbalanceRate,
+          sellImbalanceRate,
+          upTickRate,
+          consecutiveUpTicks: normalizedConsecutiveUpTicks,
+          tradeValue,
+          spreadRate,
+          expectedRequiredRate,
+          volatilityRate,
+        };
+      }
+
+      if (buyKrw > maxPositionKrw || buyKrw > maxExposureKrw) {
+        return {
+          action: "wait",
+          reason: "주문 금액이 포지션/노출 한도를 초과",
+          buyScore,
+          sellScore,
+          buyImbalanceRate,
+          sellImbalanceRate,
+          upTickRate,
+          consecutiveUpTicks: normalizedConsecutiveUpTicks,
+          tradeValue,
+          spreadRate,
+          expectedRequiredRate,
+          volatilityRate,
+        };
+      }
+
+      const hasBuySignal =
+        buyKrw > 0 &&
+        tradeValue >= minTradeValue &&
+        buyImbalanceRate >= buyThreshold &&
+        upTickRate >= upTickThreshold &&
+        spreadRate <= maxSpreadRate &&
+        volatilityRate >= minVolatilityRate &&
+        hasEnoughAskSize &&
+        buyScore >= 0.68;
+
+      return {
+        action: hasBuySignal ? "buy" : "wait",
+        reason: hasBuySignal
+          ? `매수 후보 점수 ${buyScore.toFixed(2)}`
+          : `대기: 점수 ${buyScore.toFixed(2)}, 체결대금 ${formatTradeValue(tradeValue)}`,
+        buyScore,
+        sellScore,
+        buyImbalanceRate,
+        sellImbalanceRate,
+        upTickRate,
+        consecutiveUpTicks: normalizedConsecutiveUpTicks,
+        tradeValue,
+        spreadRate,
+        expectedRequiredRate,
+        volatilityRate,
+      };
+    },
+    [
+      candles,
+      hasSelectedMarketWarning,
+      normalizedMarket,
+      orderChanceConstraints.askFeeRate,
+      orderChanceConstraints.bidFeeRate,
+      orderChanceConstraints.minTotalKrw,
+      selectedOrderbook,
+      strategy,
+      strategyPosition,
+      tickStrategyStats.consecutiveLosses,
+      tickStrategyStats.realizedPnlRate,
+    ],
+  );
+
   const checkStrategy = useCallback(
     async (nextTicker: Ticker) => {
       if (!running) {
         return;
       }
 
+      resetDailyStrategyOrderCount();
       const price = Number(nextTicker.trade_price);
-      const buyBelow = Number(strategy.buyBelow);
-      const sellAbove = Number(strategy.sellAbove);
       const cooldownMs = Math.max(Number(strategy.cooldownSec) || 0, 1) * 1000;
       const elapsed = Date.now() - lastTradeAtRef.current;
 
       if (elapsed < cooldownMs) {
         return;
       }
+
+      if (strategy.mode === "tick") {
+        if (!dryRunRef.current) {
+          setRunning(false);
+          addLog("error", "틱 신호 전략은 주문 상태 추적 구현 전까지 모의 실행에서만 사용할 수 있습니다.");
+          return;
+        }
+
+        const maxDailyOrders = Math.floor(parsePositiveNumber(strategy.maxDailyOrders, 20));
+        if (strategyOrderCountRef.current.count >= maxDailyOrders) {
+          setTickStrategyStatus({
+            action: "wait",
+            reason: "일일 주문 횟수 제한 도달",
+            buyScore: 0,
+            sellScore: 0,
+            buyImbalanceRate: 0,
+            sellImbalanceRate: 0,
+            upTickRate: 0,
+            consecutiveUpTicks: 0,
+            tradeValue: 0,
+            spreadRate: selectedOrderbook?.spread_rate ?? 0,
+            expectedRequiredRate: 0,
+            volatilityRate: calculateCandleVolatility(candles),
+          });
+          return;
+        }
+
+        const status = buildTickStrategyStatus(nextTicker);
+        setTickStrategyStatus(status);
+
+        if (status.action === "buy") {
+          lastTradeAtRef.current = Date.now();
+          const entryPrice = selectedOrderbook?.best_ask_price || nextTicker.trade_price;
+          const quoteAmount = parsePositiveNumber(strategy.buyKrw, 0);
+          await invokeOrder({
+            market: normalizedMarket,
+            side: "bid",
+            price: strategy.buyKrw,
+            ord_type: "price",
+            identifier: `tickbuy${Date.now().toString(36).slice(-12)}`,
+          });
+          setStrategyPosition({
+            market: normalizedMarket,
+            entryPrice,
+            volume: entryPrice > 0 ? quoteAmount / entryPrice : 0,
+            quoteAmount,
+            enteredAt: Date.now(),
+          });
+          strategyOrderCountRef.current.count += 1;
+          addLog("info", `틱 전략 가상 진입: ${normalizedMarket} ${formatMarketPrice(normalizedMarket, entryPrice)}`);
+          return;
+        }
+
+        if (status.action === "sell" && strategyPosition?.market === normalizedMarket) {
+          lastTradeAtRef.current = Date.now();
+          const exitPrice = selectedOrderbook?.best_bid_price || nextTicker.trade_price;
+          const configuredFeeRate = percentInputToRate(strategy.feeRate, 0.05);
+          const bidFeeRate = orderChanceConstraints.bidFeeRate ?? configuredFeeRate;
+          const askFeeRate = orderChanceConstraints.askFeeRate ?? configuredFeeRate;
+          const slippageRate = percentInputToRate(strategy.slippageRate, 0.03);
+          const grossPnl = (exitPrice - strategyPosition.entryPrice) * strategyPosition.volume;
+          const cost =
+            strategyPosition.quoteAmount * bidFeeRate +
+            exitPrice * strategyPosition.volume * (askFeeRate + slippageRate);
+          const netPnl = grossPnl - cost;
+          await invokeOrder({
+            market: normalizedMarket,
+            side: "ask",
+            volume: strategyPosition.volume.toFixed(8),
+            ord_type: "market",
+            identifier: `ticksell${Date.now().toString(36).slice(-11)}`,
+          });
+          setStrategyPosition(null);
+          strategyOrderCountRef.current.count += 1;
+          setTickStrategyStats((current) => {
+            const nextRealizedPnl = current.realizedPnl + netPnl;
+            const baseAmount = Math.max(parsePositiveNumber(strategy.maxExposureKrw, strategyPosition.quoteAmount), 1);
+            const isWin = netPnl >= 0;
+            return {
+              ...current,
+              trades: current.trades + 1,
+              wins: current.wins + (isWin ? 1 : 0),
+              losses: current.losses + (isWin ? 0 : 1),
+              consecutiveLosses: isWin ? 0 : current.consecutiveLosses + 1,
+              realizedPnl: nextRealizedPnl,
+              realizedPnlRate: nextRealizedPnl / baseAmount,
+            };
+          });
+          addLog("info", `틱 전략 가상 청산: ${normalizedMarket}, 순손익 ${formatTradeValue(netPnl)}`);
+        }
+        return;
+      }
+
+      const buyBelow = Number(strategy.buyBelow);
+      const sellAbove = Number(strategy.sellAbove);
 
       if (strategy.buyBelow.trim() !== "" && price <= buyBelow) {
         lastTradeAtRef.current = Date.now();
@@ -1730,7 +2432,20 @@ function App() {
         });
       }
     },
-    [addLog, invokeOrder, normalizedMarket, running, strategy],
+    [
+      addLog,
+      buildTickStrategyStatus,
+      candles,
+      invokeOrder,
+      normalizedMarket,
+      orderChanceConstraints.askFeeRate,
+      orderChanceConstraints.bidFeeRate,
+      resetDailyStrategyOrderCount,
+      running,
+      selectedOrderbook,
+      strategy,
+      strategyPosition,
+    ],
   );
 
   const refreshAll = useCallback(async () => {
@@ -1747,6 +2462,7 @@ function App() {
 
   useEffect(() => {
     setManualOrder((current) => ({ ...current, market: normalizedMarket }));
+    setTickStrategyStatus(null);
   }, [normalizedMarket]);
 
   useEffect(() => {
@@ -1762,6 +2478,197 @@ function App() {
 
     return () => window.clearInterval(timer);
   }, [refreshMarketTickers]);
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) {
+      return;
+    }
+
+    let unlistenSnapshot: (() => void) | undefined;
+    let unlistenStatus: (() => void) | undefined;
+
+    WebviewWindow.getCurrent()
+      .listen("trade-volume-snapshot", (event) => {
+        const payload = event.payload;
+        if (!Array.isArray(payload)) {
+          return;
+        }
+
+        setTradeVolumes((current) => {
+          const next = { ...current };
+          for (const item of payload) {
+            if (!isRecord(item) || typeof item.market !== "string") {
+              continue;
+            }
+
+            const marketCode = item.market.trim().toUpperCase();
+            if (!marketCode.startsWith("KRW-")) {
+              continue;
+            }
+
+            const accumulatedTradeValue = Number(item.accumulated_trade_value) || 0;
+            const accumulatedBidTradeValue = Number(item.accumulated_bid_trade_value) || 0;
+            const accumulatedAskTradeValue = Number(item.accumulated_ask_trade_value) || 0;
+            const tradeCount = Number(item.trade_count) || 0;
+            const price = Number(item.last_trade_price) || 0;
+            const previousTotals = lastTradeSnapshotTotalsRef.current[marketCode];
+            if (previousTotals && price > 0) {
+              const tradeValueDelta = Math.max(accumulatedTradeValue - previousTotals.tradeValue, 0);
+              const bidTradeValueDelta = Math.max(accumulatedBidTradeValue - previousTotals.bidTradeValue, 0);
+              const askTradeValueDelta = Math.max(accumulatedAskTradeValue - previousTotals.askTradeValue, 0);
+              const tradeCountDelta = Math.max(tradeCount - previousTotals.tradeCount, 0);
+              if (tradeValueDelta > 0 || tradeCountDelta > 0) {
+                tradeSignalSamplesRef.current.push({
+                  market: marketCode,
+                  at: Date.now(),
+                  price,
+                  tradeValue: tradeValueDelta,
+                  bidTradeValue: bidTradeValueDelta,
+                  askTradeValue: askTradeValueDelta,
+                  tradeCount: tradeCountDelta,
+                  direction: price > previousTotals.price ? "up" : price < previousTotals.price ? "down" : "flat",
+                });
+                const cutoff = Date.now() - 180_000;
+                tradeSignalSamplesRef.current = tradeSignalSamplesRef.current.filter((sample) => sample.at >= cutoff);
+              }
+            }
+
+            lastTradeSnapshotTotalsRef.current[marketCode] = {
+              tradeValue: accumulatedTradeValue,
+              bidTradeValue: accumulatedBidTradeValue,
+              askTradeValue: accumulatedAskTradeValue,
+              tradeCount,
+              price,
+            };
+
+            next[marketCode] = {
+              market: marketCode,
+              last_trade_price: price,
+              last_trade_volume: Number(item.last_trade_volume) || 0,
+              accumulated_volume: Number(item.accumulated_volume) || 0,
+              accumulated_trade_value: accumulatedTradeValue,
+              accumulated_bid_volume: Number(item.accumulated_bid_volume) || 0,
+              accumulated_ask_volume: Number(item.accumulated_ask_volume) || 0,
+              accumulated_bid_trade_value: accumulatedBidTradeValue,
+              accumulated_ask_trade_value: accumulatedAskTradeValue,
+              trade_count: tradeCount,
+              last_trade_timestamp:
+                typeof item.last_trade_timestamp === "number" ? item.last_trade_timestamp : null,
+              ask_bid: typeof item.ask_bid === "string" ? item.ask_bid : null,
+            };
+          }
+          return next;
+        });
+      })
+      .then((nextUnlisten) => {
+        unlistenSnapshot = nextUnlisten;
+      });
+
+    WebviewWindow.getCurrent()
+      .listen("trade-volume-status", (event) => {
+        if (typeof event.payload === "string" && event.payload !== "체결 WebSocket 연결됨") {
+          addLog("warn", event.payload);
+        }
+      })
+      .then((nextUnlisten) => {
+        unlistenStatus = nextUnlisten;
+      });
+
+    return () => {
+      unlistenSnapshot?.();
+      unlistenStatus?.();
+    };
+  }, [addLog]);
+
+  useEffect(() => {
+    if (krwMarketCodes.length === 0 || !("__TAURI_INTERNALS__" in window)) {
+      return;
+    }
+
+    setTradeVolumes({});
+    void invoke("start_trade_volume_stream", { markets: krwMarketCodes }).catch((error) => {
+      addLog("error", String(error));
+    });
+
+    return () => {
+      void invoke("stop_trade_volume_stream");
+    };
+  }, [addLog, krwMarketCodes]);
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) {
+      return;
+    }
+
+    let unlistenSnapshot: (() => void) | undefined;
+    let unlistenStatus: (() => void) | undefined;
+
+    WebviewWindow.getCurrent()
+      .listen("orderbook-snapshot", (event) => {
+        const item = event.payload;
+        if (!isRecord(item) || typeof item.market !== "string") {
+          return;
+        }
+
+        const marketCode = item.market.trim().toUpperCase();
+        if (!marketCode.startsWith("KRW-")) {
+          return;
+        }
+
+        setOrderbooks((current) => ({
+          ...current,
+          [marketCode]: {
+            market: marketCode,
+            best_ask_price: Number(item.best_ask_price) || 0,
+            best_bid_price: Number(item.best_bid_price) || 0,
+            best_ask_size: Number(item.best_ask_size) || 0,
+            best_bid_size: Number(item.best_bid_size) || 0,
+            total_ask_size: Number(item.total_ask_size) || 0,
+            total_bid_size: Number(item.total_bid_size) || 0,
+            spread: Number(item.spread) || 0,
+            spread_rate: Number(item.spread_rate) || 0,
+            received_at: Number(item.received_at) || Date.now(),
+            exchange_timestamp: typeof item.exchange_timestamp === "number" ? item.exchange_timestamp : null,
+          },
+        }));
+      })
+      .then((nextUnlisten) => {
+        unlistenSnapshot = nextUnlisten;
+      });
+
+    WebviewWindow.getCurrent()
+      .listen("orderbook-status", (event) => {
+        if (typeof event.payload === "string" && event.payload !== "호가 WebSocket 연결됨") {
+          addLog("warn", event.payload);
+        }
+      })
+      .then((nextUnlisten) => {
+        unlistenStatus = nextUnlisten;
+      });
+
+    return () => {
+      unlistenSnapshot?.();
+      unlistenStatus?.();
+    };
+  }, [addLog]);
+
+  useEffect(() => {
+    if (!isMarketCode(normalizedMarket) || !("__TAURI_INTERNALS__" in window)) {
+      return;
+    }
+
+    setOrderbooks((current) => {
+      const selected = current[normalizedMarket];
+      return selected ? { [normalizedMarket]: selected } : {};
+    });
+    void invoke("start_orderbook_stream", { market: normalizedMarket }).catch((error) => {
+      addLog("error", String(error));
+    });
+
+    return () => {
+      void invoke("stop_orderbook_stream");
+    };
+  }, [addLog, normalizedMarket]);
 
   useEffect(() => {
     const container = chartContainerRef.current;
@@ -1899,7 +2806,6 @@ function App() {
     clearUserPreferences();
     setMarket(defaultUserPreferences.market);
     setDryRun(defaultUserPreferences.dryRun);
-    setMarketFilter(defaultUserPreferences.marketFilter);
     setMarketSearch(defaultUserPreferences.marketSearch);
     setMarketSort({ ...defaultUserPreferences.marketSort });
     setChartTimeframe(defaultUserPreferences.chartTimeframe);
@@ -1946,7 +2852,12 @@ function App() {
             id="market"
             value={market}
             onChange={(event) => setMarket(event.currentTarget.value)}
-            onBlur={() => setMarket((value) => value.trim().toUpperCase() || "KRW-BTC")}
+            onBlur={() =>
+              setMarket((value) => {
+                const nextMarket = value.trim().toUpperCase();
+                return isMarketCode(nextMarket) ? nextMarket : "KRW-BTC";
+              })
+            }
           />
           {visibleRecentMarkets.length > 0 ? (
             <div className="recent-markets" aria-label="최근 선택 종목">
@@ -1979,6 +2890,12 @@ function App() {
         <div className="price-tile">
           <span>24h 거래대금</span>
           <strong>{ticker ? `${numberFormat.format(Math.round(ticker.acc_trade_price_24h))} KRW` : "-"}</strong>
+          <em>{ticker ? formatTradeVolume(normalizedMarket, ticker.acc_trade_volume_24h) : "-"}</em>
+        </div>
+        <div className="price-tile">
+          <span>실시간 체결량</span>
+          <strong>{selectedTradeVolume ? formatTradeVolume(normalizedMarket, selectedTradeVolume.accumulated_volume) : "-"}</strong>
+          <em>{selectedTradeVolume ? formatTradeValue(selectedTradeVolume.accumulated_trade_value) : "WebSocket 대기"}</em>
         </div>
         <button className="icon-button" type="button" disabled={busy} onClick={refreshAll}>
           <RefreshCw size={18} />
@@ -2000,18 +2917,7 @@ function App() {
               onChange={(event) => setMarketSearch(event.currentTarget.value)}
             />
           </label>
-          <div className="segmented-control" aria-label="마켓 필터">
-            {marketFilters.map((item) => (
-              <button
-                className={marketFilter === item.value ? "selected" : ""}
-                key={item.value}
-                type="button"
-                aria-pressed={marketFilter === item.value}
-                onClick={() => setMarketFilter(item.value)}
-              >
-                {item.label}
-              </button>
-            ))}
+          <div className="segmented-control" aria-label="마켓 보기">
             <button
               className={showFavoritesOnly ? "selected" : ""}
               type="button"
@@ -2023,6 +2929,14 @@ function App() {
             </button>
           </div>
           <div className="sort-control" aria-label="종목 정렬">
+            <button
+              className={marketSort.mode === "tradeValue" ? "selected" : ""}
+              type="button"
+              aria-pressed={marketSort.mode === "tradeValue"}
+              onClick={() => toggleMarketSort("tradeValue")}
+            >
+              실시간 거래대금 {marketSort.mode === "tradeValue" && marketSort.direction === "asc" ? "낮은 순" : "높은 순"}
+            </button>
             <button
               className={marketSort.mode === "price" ? "selected" : ""}
               type="button"
@@ -2046,7 +2960,7 @@ function App() {
                 ? "불러오는 중"
                 : showFavoritesOnly
                   ? `${filteredMarkets.length} / ${favoriteMarkets.length}개 즐겨찾기`
-                  : `${filteredMarkets.length} / ${markets.length}개`}
+                  : `KRW ${filteredMarkets.length} / ${markets.length}개`}
             </span>
             <button className="text-button" type="button" disabled={marketsLoading} onClick={refreshMarkets}>
               <RefreshCw size={15} />
@@ -2063,6 +2977,7 @@ function App() {
             ) : (
               filteredMarkets.map((item) => {
                 const itemTicker = marketTickers[item.market];
+                const itemTradeVolume = tradeVolumes[item.market];
                 const isFavorite = favoriteMarketSet.has(item.market);
 
                 return (
@@ -2092,6 +3007,8 @@ function App() {
                         <em className={itemTicker ? (itemTicker.signed_change_price >= 0 ? "up" : "down") : ""}>
                           {itemTicker ? `${itemTicker.signed_change_rate >= 0 ? "+" : ""}${percentFormat.format(itemTicker.signed_change_rate * 100)}%` : "-"}
                         </em>
+                        <em>{itemTradeVolume ? formatTradeValue(itemTradeVolume.accumulated_trade_value) : "실시간 대기"}</em>
+                        <em>{itemTradeVolume ? formatTradeVolume(item.market, itemTradeVolume.accumulated_volume) : "-"}</em>
                         <code>{item.market}</code>
                       </span>
                     </button>
@@ -2183,77 +3100,368 @@ function App() {
             <Activity size={18} />
             <h2>자동 전략</h2>
           </div>
-          <div className="form-grid">
-            <label>
-              감시 주기(초)
-              <input
-                value={strategy.intervalSec}
-                inputMode="numeric"
-                onChange={(event) => {
-                  const value = event.currentTarget.value;
-                  setStrategy((current) => ({ ...current, intervalSec: value }));
-                }}
-              />
-            </label>
-            <label>
-              쿨다운(초)
-              <input
-                value={strategy.cooldownSec}
-                inputMode="numeric"
-                onChange={(event) => {
-                  const value = event.currentTarget.value;
-                  setStrategy((current) => ({ ...current, cooldownSec: value }));
-                }}
-              />
-            </label>
-            <label>
-              이하 매수 기준가
-              <input
-                value={strategy.buyBelow}
-                inputMode="decimal"
-                placeholder="예: 90000000"
-                onChange={(event) => {
-                  const value = event.currentTarget.value;
-                  setStrategy((current) => ({ ...current, buyBelow: value }));
-                }}
-              />
-            </label>
-            <label>
-              매수 금액(KRW)
-              <input
-                value={strategy.buyKrw}
-                inputMode="decimal"
-                onChange={(event) => {
-                  const value = event.currentTarget.value;
-                  setStrategy((current) => ({ ...current, buyKrw: value }));
-                }}
-              />
-            </label>
-            <label>
-              이상 매도 기준가
-              <input
-                value={strategy.sellAbove}
-                inputMode="decimal"
-                placeholder="예: 110000000"
-                onChange={(event) => {
-                  const value = event.currentTarget.value;
-                  setStrategy((current) => ({ ...current, sellAbove: value }));
-                }}
-              />
-            </label>
-            <label>
-              매도 수량
-              <input
-                value={strategy.sellVolume}
-                inputMode="decimal"
-                placeholder="예: 0.001"
-                onChange={(event) => {
-                  const value = event.currentTarget.value;
-                  setStrategy((current) => ({ ...current, sellVolume: value }));
-                }}
-              />
-            </label>
+          <div className="segmented-control" aria-label="자동 전략 모드">
+            <button
+              className={strategy.mode === "price" ? "selected" : ""}
+              type="button"
+              aria-pressed={strategy.mode === "price"}
+              onClick={() => setStrategy((current) => ({ ...current, mode: "price" }))}
+            >
+              가격 조건
+            </button>
+            <button
+              className={strategy.mode === "tick" ? "selected" : ""}
+              type="button"
+              aria-pressed={strategy.mode === "tick"}
+              onClick={() => setStrategy((current) => ({ ...current, mode: "tick" }))}
+            >
+              틱 신호
+            </button>
           </div>
+          {strategy.mode === "price" ? (
+            <div className="form-grid">
+              <label>
+                감시 주기(초)
+                <input
+                  value={strategy.intervalSec}
+                  inputMode="numeric"
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setStrategy((current) => ({ ...current, intervalSec: value }));
+                  }}
+                />
+              </label>
+              <label>
+                쿨다운(초)
+                <input
+                  value={strategy.cooldownSec}
+                  inputMode="numeric"
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setStrategy((current) => ({ ...current, cooldownSec: value }));
+                  }}
+                />
+              </label>
+              <label>
+                이하 매수 기준가
+                <input
+                  value={strategy.buyBelow}
+                  inputMode="decimal"
+                  placeholder="예: 90000000"
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setStrategy((current) => ({ ...current, buyBelow: value }));
+                  }}
+                />
+              </label>
+              <label>
+                매수 금액(KRW)
+                <input
+                  value={strategy.buyKrw}
+                  inputMode="decimal"
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setStrategy((current) => ({ ...current, buyKrw: value }));
+                  }}
+                />
+              </label>
+              <label>
+                이상 매도 기준가
+                <input
+                  value={strategy.sellAbove}
+                  inputMode="decimal"
+                  placeholder="예: 110000000"
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setStrategy((current) => ({ ...current, sellAbove: value }));
+                  }}
+                />
+              </label>
+              <label>
+                매도 수량
+                <input
+                  value={strategy.sellVolume}
+                  inputMode="decimal"
+                  placeholder="예: 0.001"
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setStrategy((current) => ({ ...current, sellVolume: value }));
+                  }}
+                />
+              </label>
+            </div>
+          ) : (
+            <>
+              <div className="form-grid">
+                <label>
+                  감시 주기(초)
+                  <input
+                    value={strategy.intervalSec}
+                    inputMode="numeric"
+                    onChange={(event) => setStrategy((current) => ({ ...current, intervalSec: event.currentTarget.value }))}
+                  />
+                </label>
+                <label>
+                  쿨다운(초)
+                  <input
+                    value={strategy.cooldownSec}
+                    inputMode="numeric"
+                    onChange={(event) => setStrategy((current) => ({ ...current, cooldownSec: event.currentTarget.value }))}
+                  />
+                </label>
+                <label>
+                  매수 금액(KRW)
+                  <input
+                    value={strategy.buyKrw}
+                    inputMode="decimal"
+                    onChange={(event) => setStrategy((current) => ({ ...current, buyKrw: event.currentTarget.value }))}
+                  />
+                </label>
+                <label>
+                  틱 윈도우(초)
+                  <input
+                    value={strategy.tickWindowSec}
+                    inputMode="numeric"
+                    onChange={(event) => setStrategy((current) => ({ ...current, tickWindowSec: event.currentTarget.value }))}
+                  />
+                </label>
+                <label>
+                  모멘텀 틱 수
+                  <input
+                    value={strategy.momentumTicks}
+                    inputMode="numeric"
+                    onChange={(event) => setStrategy((current) => ({ ...current, momentumTicks: event.currentTarget.value }))}
+                  />
+                </label>
+                <label>
+                  매수 체결 비율(%)
+                  <input
+                    value={strategy.buyImbalanceThreshold}
+                    inputMode="decimal"
+                    onChange={(event) =>
+                      setStrategy((current) => ({ ...current, buyImbalanceThreshold: event.currentTarget.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  매도 체결 비율(%)
+                  <input
+                    value={strategy.sellImbalanceThreshold}
+                    inputMode="decimal"
+                    onChange={(event) =>
+                      setStrategy((current) => ({ ...current, sellImbalanceThreshold: event.currentTarget.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  상승 틱 비율(%)
+                  <input
+                    value={strategy.upTickRatioThreshold}
+                    inputMode="decimal"
+                    onChange={(event) =>
+                      setStrategy((current) => ({ ...current, upTickRatioThreshold: event.currentTarget.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  최소 체결대금(KRW)
+                  <input
+                    value={strategy.minTradeValueKrw}
+                    inputMode="decimal"
+                    onChange={(event) =>
+                      setStrategy((current) => ({ ...current, minTradeValueKrw: event.currentTarget.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  최소 주문금액(KRW)
+                  <input
+                    value={strategy.minOrderKrw}
+                    inputMode="decimal"
+                    onChange={(event) =>
+                      setStrategy((current) => ({ ...current, minOrderKrw: event.currentTarget.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  1회 포지션 한도(KRW)
+                  <input
+                    value={strategy.maxPositionKrw}
+                    inputMode="decimal"
+                    onChange={(event) =>
+                      setStrategy((current) => ({ ...current, maxPositionKrw: event.currentTarget.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  전체 노출 한도(KRW)
+                  <input
+                    value={strategy.maxExposureKrw}
+                    inputMode="decimal"
+                    onChange={(event) =>
+                      setStrategy((current) => ({ ...current, maxExposureKrw: event.currentTarget.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  최소 변동성(%)
+                  <input
+                    value={strategy.minVolatilityRate}
+                    inputMode="decimal"
+                    onChange={(event) =>
+                      setStrategy((current) => ({ ...current, minVolatilityRate: event.currentTarget.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  최대 스프레드(%)
+                  <input
+                    value={strategy.maxSpreadRate}
+                    inputMode="decimal"
+                    onChange={(event) =>
+                      setStrategy((current) => ({ ...current, maxSpreadRate: event.currentTarget.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  익절(%)
+                  <input
+                    value={strategy.takeProfitRate}
+                    inputMode="decimal"
+                    onChange={(event) =>
+                      setStrategy((current) => ({ ...current, takeProfitRate: event.currentTarget.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  손절(%)
+                  <input
+                    value={strategy.stopLossRate}
+                    inputMode="decimal"
+                    onChange={(event) =>
+                      setStrategy((current) => ({ ...current, stopLossRate: event.currentTarget.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  일일 손실 제한(%)
+                  <input
+                    value={strategy.dailyStopLossRate}
+                    inputMode="decimal"
+                    onChange={(event) =>
+                      setStrategy((current) => ({ ...current, dailyStopLossRate: event.currentTarget.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  연속 손실 제한
+                  <input
+                    value={strategy.lossStreakLimit}
+                    inputMode="numeric"
+                    onChange={(event) =>
+                      setStrategy((current) => ({ ...current, lossStreakLimit: event.currentTarget.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  최대 보유(초)
+                  <input
+                    value={strategy.maxHoldingSec}
+                    inputMode="numeric"
+                    onChange={(event) =>
+                      setStrategy((current) => ({ ...current, maxHoldingSec: event.currentTarget.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  일일 주문 제한
+                  <input
+                    value={strategy.maxDailyOrders}
+                    inputMode="numeric"
+                    onChange={(event) =>
+                      setStrategy((current) => ({ ...current, maxDailyOrders: event.currentTarget.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  수수료/편도(%)
+                  <input
+                    value={strategy.feeRate}
+                    inputMode="decimal"
+                    onChange={(event) => setStrategy((current) => ({ ...current, feeRate: event.currentTarget.value }))}
+                  />
+                </label>
+                <label>
+                  슬리피지(%)
+                  <input
+                    value={strategy.slippageRate}
+                    inputMode="decimal"
+                    onChange={(event) =>
+                      setStrategy((current) => ({ ...current, slippageRate: event.currentTarget.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  안전 마진(%)
+                  <input
+                    value={strategy.safetyMarginRate}
+                    inputMode="decimal"
+                    onChange={(event) =>
+                      setStrategy((current) => ({ ...current, safetyMarginRate: event.currentTarget.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  데이터 지연 제한(초)
+                  <input
+                    value={strategy.staleDataSec}
+                    inputMode="numeric"
+                    onChange={(event) =>
+                      setStrategy((current) => ({ ...current, staleDataSec: event.currentTarget.value }))
+                    }
+                  />
+                </label>
+              </div>
+              <div className="strategy-metrics">
+                <span>상태</span>
+                <strong>{tickStrategyStatus?.reason ?? "틱 신호 대기"}</strong>
+                <span>매수 점수</span>
+                <strong>{tickStrategyStatus ? tickStrategyStatus.buyScore.toFixed(2) : "-"}</strong>
+                <span>매수/매도 체결</span>
+                <strong>
+                  {tickStrategyStatus
+                    ? `${formatRate(tickStrategyStatus.buyImbalanceRate)} / ${formatRate(tickStrategyStatus.sellImbalanceRate)}`
+                    : "-"}
+                </strong>
+                <span>상승 틱</span>
+                <strong>
+                  {tickStrategyStatus
+                    ? `${formatRate(tickStrategyStatus.upTickRate)} / 연속 ${tickStrategyStatus.consecutiveUpTicks}`
+                    : "-"}
+                </strong>
+                <span>스프레드</span>
+                <strong>{selectedOrderbook ? formatRate(selectedOrderbook.spread_rate) : "호가 대기"}</strong>
+                <span>주문 가능정보</span>
+                <strong>
+                  {orderChanceConstraints.minTotalKrw
+                    ? `최소 ${formatTradeValue(orderChanceConstraints.minTotalKrw)}`
+                    : "수동 비용 설정 사용"}
+                </strong>
+                <span>검증 손익</span>
+                <strong>
+                  {`${formatTradeValue(tickStrategyStats.realizedPnl)} / ${formatRate(tickStrategyStats.realizedPnlRate)}`}
+                </strong>
+                <span>승/패</span>
+                <strong>{`${tickStrategyStats.wins}/${tickStrategyStats.losses}, 연속손실 ${tickStrategyStats.consecutiveLosses}`}</strong>
+                <span>가상 포지션</span>
+                <strong>
+                  {strategyPosition?.market === normalizedMarket
+                    ? `${formatMarketPrice(normalizedMarket, strategyPosition.entryPrice)} / ${strategyPosition.volume.toFixed(8)}`
+                    : "없음"}
+                </strong>
+              </div>
+            </>
+          )}
           <div className="button-row">
             <button
               className={running ? "danger-button" : "primary-button"}
@@ -2267,7 +3475,9 @@ function App() {
               {running ? "정지" : "시작"}
             </button>
           </div>
-          <p className="note">매수는 Upbit 시장가 매수 규칙에 따라 ord_type=price, 매도는 ord_type=market으로 전송합니다.</p>
+          <p className="note">
+            가격 조건은 기존 주문 경로를 사용합니다. 틱 신호는 체결/호가 기반 dry-run 전용 가상 포지션으로 먼저 검증합니다.
+          </p>
         </article>
 
         <article className="panel manual">
@@ -2584,7 +3794,19 @@ function App() {
             <h2>최근 응답</h2>
           </div>
           <div className="output-tabs">
-            <pre>{compactJson({ ticker, accounts, chance, lastOrder })}</pre>
+            <pre>
+              {compactJson({
+                ticker,
+                orderbook: selectedOrderbook,
+                tickStrategyStatus,
+                strategyPosition,
+                tickStrategyStats,
+                orderChanceConstraints,
+                accounts,
+                chance,
+                lastOrder,
+              })}
+            </pre>
           </div>
         </article>
 
