@@ -12,20 +12,17 @@ import {
 } from "lightweight-charts";
 import {
   Activity,
-  AlertTriangle,
   BarChart3,
-  Calculator,
   ExternalLink,
   KeyRound,
-  ListChecks,
   Play,
   RefreshCw,
   RotateCcw,
   Send,
-  ShieldCheck,
   Square,
   Star,
   Wallet,
+  X,
 } from "lucide-react";
 import "./App.css";
 
@@ -76,6 +73,13 @@ type TradeVolumeSnapshot = {
   ask_bid?: string | null;
 };
 
+type OrderbookUnit = {
+  ask_price: number;
+  bid_price: number;
+  ask_size: number;
+  bid_size: number;
+};
+
 type OrderbookSnapshot = {
   market: string;
   best_ask_price: number;
@@ -86,6 +90,7 @@ type OrderbookSnapshot = {
   total_bid_size: number;
   spread: number;
   spread_rate: number;
+  orderbook_units: OrderbookUnit[];
   received_at: number;
   exchange_timestamp?: number | null;
 };
@@ -139,6 +144,8 @@ type ChartTimeframe =
 type MarketSortMode = "price" | "changeRate" | "tradeValue";
 type SortDirection = "desc" | "asc";
 type ManualOrderPreset = "limit" | "marketBuy" | "marketSell";
+type ToolPanel = "market";
+type ToolModal = "account" | "manual" | "debug";
 type ManualOrderValidation = {
   isValid: boolean;
   title: string;
@@ -149,7 +156,7 @@ type ManualOrderValidation = {
 };
 
 type StrategySettings = {
-  mode: "price" | "tick";
+  mode: "price" | "tick" | "surge";
   intervalSec: string;
   buyBelow: string;
   buyKrw: string;
@@ -222,7 +229,6 @@ const percentFormat = new Intl.NumberFormat("ko-KR", {
   maximumFractionDigits: 2,
   minimumFractionDigits: 2,
 });
-const orderAmountPresets = [10_000, 50_000, 100_000];
 const ASSET_WINDOW_LABEL = "asset";
 const CHART_AUTO_REFRESH_MS = 15_000;
 const MARKET_TICKER_REFRESH_MS = 10_000;
@@ -230,6 +236,13 @@ const FAVORITE_MARKETS_STORAGE_KEY = "autobo.favoriteMarkets";
 const RECENT_MARKETS_STORAGE_KEY = "autobo.recentMarkets";
 const USER_PREFERENCES_STORAGE_KEY = "autobo.userPreferences.v1";
 const MAX_RECENT_MARKETS = 8;
+const SURGE_ENTRY_HOUR_KST = 9;
+const SURGE_ENTRY_WINDOW_MINUTES = 10;
+const SURGE_DEFAULT_BUY_KRW = 10_000;
+const SURGE_MAX_BUY_KRW = 20_000;
+const SURGE_DAILY_BUDGET_KRW = 100_000;
+const SURGE_SAMPLE_WINDOW_MS = 60_000;
+const SURGE_MIN_SCORE = 0.68;
 const defaultStrategy: StrategySettings = {
   mode: "price",
   intervalSec: "10",
@@ -245,8 +258,8 @@ const defaultStrategy: StrategySettings = {
   upTickRatioThreshold: "60",
   minTradeValueKrw: "5000000",
   minOrderKrw: "10000",
-  maxPositionKrw: "10000",
-  maxExposureKrw: "10000",
+  maxPositionKrw: "20000",
+  maxExposureKrw: "100000",
   minVolatilityRate: "0.05",
   maxSpreadRate: "0.08",
   takeProfitRate: "0.25",
@@ -272,6 +285,9 @@ const defaultManualOrder: OrderRequest = {
 const defaultMarketSort: MarketSort = {
   mode: "tradeValue",
   direction: "desc",
+};
+const defaultVisibleToolPanels: Record<ToolPanel, boolean> = {
+  market: true,
 };
 const quickOrderRatios = [25, 50, 100];
 
@@ -325,6 +341,21 @@ type OrderChanceConstraints = {
   minTotalKrw?: number;
 };
 
+type SurgeCandidate = {
+  market: string;
+  score: number;
+  changeRate: number;
+  tradeValue: number;
+  bidRate: number;
+  upTickRate: number;
+  price: number;
+};
+
+type SurgeBudgetState = {
+  day: string;
+  spentKrw: number;
+};
+
 const defaultUserPreferences: UserPreferences = {
   market: "KRW-BTC",
   dryRun: true,
@@ -334,26 +365,6 @@ const defaultUserPreferences: UserPreferences = {
   strategy: defaultStrategy,
   manualOrder: defaultManualOrder,
 };
-const manualBuyQuickAmounts = [10_000, 50_000, 100_000, 500_000];
-const manualSellQuickRatios = [0.25, 0.5, 1];
-const quickBuyAmountsByQuote: Record<string, { label: string; value: string }[]> = {
-  KRW: [
-    { label: "1만", value: "10000" },
-    { label: "5만", value: "50000" },
-    { label: "10만", value: "100000" },
-  ],
-  BTC: [
-    { label: "0.0001", value: "0.0001" },
-    { label: "0.001", value: "0.001" },
-    { label: "0.01", value: "0.01" },
-  ],
-  USDT: [
-    { label: "10", value: "10" },
-    { label: "50", value: "50" },
-    { label: "100", value: "100" },
-  ],
-};
-
 function compactJson(value: unknown) {
   return JSON.stringify(value, null, 2);
 }
@@ -473,7 +484,7 @@ function isOrderType(value: unknown): value is OrderRequest["ord_type"] {
 }
 
 function isStrategyMode(value: unknown): value is StrategySettings["mode"] {
-  return value === "price" || value === "tick";
+  return value === "price" || value === "tick" || value === "surge";
 }
 
 function stringValue(value: unknown, fallback = "") {
@@ -603,6 +614,18 @@ function formatMarketPrice(market: string, price: number) {
   });
 
   return `${formattedPrice} ${quoteCurrency}`;
+}
+
+function formatOrderbookPrice(market: string, price: number) {
+  if (!Number.isFinite(price)) {
+    return "-";
+  }
+
+  const quoteCurrency = market.split("-")[0] ?? "";
+
+  return price.toLocaleString("ko-KR", {
+    maximumFractionDigits: quoteCurrency === "KRW" ? 3 : 8,
+  });
 }
 
 function parsePositiveDecimal(value?: string | null) {
@@ -822,6 +845,48 @@ function formatTradeValue(value: number | null | undefined) {
   return `${Math.round(value).toLocaleString("ko-KR")} KRW`;
 }
 
+function formatMarketListPrice(market: string, price: number | null | undefined) {
+  if (price == null || !Number.isFinite(price)) {
+    return "-";
+  }
+
+  const quoteCurrency = market.split("-")[0] ?? "";
+
+  return price.toLocaleString("ko-KR", {
+    maximumFractionDigits: quoteCurrency === "KRW" ? 3 : 8,
+  });
+}
+
+function formatMarketListChangePrice(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) {
+    return "-";
+  }
+
+  const sign = value > 0 ? "+" : "";
+
+  return `${sign}${value.toLocaleString("ko-KR", {
+    maximumFractionDigits: 3,
+  })}`;
+}
+
+function formatMarketListTradeValue(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) {
+    return "-";
+  }
+
+  return `${Math.round(value / 1_000_000).toLocaleString("ko-KR")}백만`;
+}
+
+function formatOrderbookSize(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) {
+    return "-";
+  }
+
+  return value.toLocaleString("ko-KR", {
+    maximumFractionDigits: 8,
+  });
+}
+
 function parseNonNegativeNumber(value: unknown, fallback: number) {
   const nextValue = typeof value === "string" || typeof value === "number" ? Number(value) : Number.NaN;
   return Number.isFinite(nextValue) && nextValue >= 0 ? nextValue : fallback;
@@ -838,6 +903,29 @@ function parseOptionalNumber(value: unknown) {
   }
 
   return null;
+}
+
+function parseOrderbookUnits(value: unknown): OrderbookUnit[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => {
+      if (!isRecord(item)) {
+        return null;
+      }
+
+      const unit: OrderbookUnit = {
+        ask_price: Number(item.ask_price) || 0,
+        bid_price: Number(item.bid_price) || 0,
+        ask_size: Number(item.ask_size) || 0,
+        bid_size: Number(item.bid_size) || 0,
+      };
+
+      return unit.ask_price > 0 || unit.bid_price > 0 ? unit : null;
+    })
+    .filter((item): item is OrderbookUnit => item !== null);
 }
 
 function percentInputToRate(value: string, fallbackPercent: number) {
@@ -912,6 +1000,33 @@ function createDefaultTickStrategyStats(): TickStrategyStats {
   };
 }
 
+function getKstDateParts(date = new Date()) {
+  const kstDate = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+  return {
+    day: kstDate.toISOString().slice(0, 10),
+    weekday: kstDate.getUTCDay(),
+    hour: kstDate.getUTCHours(),
+    minute: kstDate.getUTCMinutes(),
+  };
+}
+
+function createDefaultSurgeBudgetState(): SurgeBudgetState {
+  return {
+    day: getKstDateParts().day,
+    spentKrw: 0,
+  };
+}
+
+function isKstWeekdayNineEntryWindow(date = new Date()) {
+  const parts = getKstDateParts(date);
+  return (
+    parts.weekday >= 1 &&
+    parts.weekday <= 5 &&
+    parts.hour === SURGE_ENTRY_HOUR_KST &&
+    parts.minute < SURGE_ENTRY_WINDOW_MINUTES
+  );
+}
+
 function parseAssetAmount(value: string) {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? numberValue : 0;
@@ -930,26 +1045,6 @@ function isAssetAccount(value: unknown): value is AssetAccount {
 
 function toAssetAccounts(value: unknown) {
   return Array.isArray(value) ? value.filter(isAssetAccount) : [];
-}
-
-function getMarketBaseCurrency(marketCode: string) {
-  return marketCode.split("-")[1]?.trim().toUpperCase() ?? "";
-}
-
-function formatOrderVolume(value: number) {
-  if (!Number.isFinite(value) || value <= 0) {
-    return "";
-  }
-
-  return value.toFixed(8).replace(/\.?0+$/, "");
-}
-
-function formatQuickKrwAmount(value: number) {
-  return `${value.toLocaleString("ko-KR")} KRW`;
-}
-
-function formatSellRatioLabel(value: number) {
-  return `${Math.round(value * 100)}%`;
 }
 
 function getAssetMarket(account: AssetAccount) {
@@ -1100,7 +1195,7 @@ function AssetWindow() {
     <main className="asset-shell">
       <section className="asset-header panel">
         <div>
-          <span className="eyebrow">Upbit Account</span>
+          <span className="eyebrow">AutoBo Account</span>
           <h1>자산</h1>
         </div>
         <button className="secondary-button" type="button" disabled={loading} onClick={refreshAccounts}>
@@ -1224,6 +1319,7 @@ function App() {
     >
   >({});
   const strategyOrderCountRef = useRef({ day: new Date().toDateString(), count: 0 });
+  const surgeBudgetRef = useRef<SurgeBudgetState>(createDefaultSurgeBudgetState());
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -1236,10 +1332,13 @@ function App() {
   const [tickStrategyStatus, setTickStrategyStatus] = useState<TickStrategyStatus | null>(null);
   const [strategyPosition, setStrategyPosition] = useState<StrategyPosition | null>(null);
   const [tickStrategyStats, setTickStrategyStats] = useState<TickStrategyStats>(createDefaultTickStrategyStats);
+  const [surgeCandidate, setSurgeCandidate] = useState<SurgeCandidate | null>(null);
   const [marketSearch, setMarketSearch] = useState(initialPreferences.marketSearch);
   const [favoriteMarkets, setFavoriteMarkets] = useState<string[]>(loadFavoriteMarkets);
   const [recentMarkets, setRecentMarkets] = useState<string[]>(loadRecentMarkets);
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
+  const [visibleToolPanels, setVisibleToolPanels] = useState<Record<ToolPanel, boolean>>(defaultVisibleToolPanels);
+  const [activeToolModal, setActiveToolModal] = useState<ToolModal | null>(null);
   const [marketSort, setMarketSort] = useState<MarketSort>(initialPreferences.marketSort);
   const [marketsLoading, setMarketsLoading] = useState(false);
   const [marketsError, setMarketsError] = useState<string | null>(null);
@@ -1263,13 +1362,25 @@ function App() {
     return [quote, base];
   }, [normalizedMarket]);
   const activeTicker = ticker?.market === normalizedMarket ? ticker : marketTickers[normalizedMarket] ?? null;
-  const quickBuyAmounts = quickBuyAmountsByQuote[quoteCurrency] ?? [];
   const selectedTimeframeLabel = useMemo(
     () => chartTimeframes.find((item) => item.value === chartTimeframe)?.label ?? chartTimeframe,
     [chartTimeframe],
   );
   const selectedTradeVolume = tradeVolumes[normalizedMarket] ?? null;
   const selectedOrderbook = orderbooks[normalizedMarket] ?? null;
+  const orderbookView = useMemo(() => {
+    const units = selectedOrderbook?.orderbook_units.slice(0, 15) ?? [];
+    const maxSize = units.reduce(
+      (maxValue, unit) => Math.max(maxValue, unit.ask_size, unit.bid_size),
+      0,
+    );
+
+    return {
+      askRows: units.map((unit) => ({ price: unit.ask_price, size: unit.ask_size })).reverse(),
+      bidRows: units.map((unit) => ({ price: unit.bid_price, size: unit.bid_size })),
+      maxSize,
+    };
+  }, [selectedOrderbook]);
   const orderChanceConstraints = useMemo(() => extractOrderChanceConstraints(chance), [chance]);
   const krwMarketCodes = useMemo(() => markets.map((item) => item.market), [markets]);
   const hasSelectedMarketWarning =
@@ -1311,21 +1422,29 @@ function App() {
   const clearRecentMarkets = useCallback(() => {
     setRecentMarkets([]);
   }, []);
-  const activeManualOrderPreset = useMemo<ManualOrderPreset | null>(() => {
-    if (manualOrder.ord_type === "limit") {
-      return "limit";
+  const toggleToolPanel = useCallback((panel: ToolPanel) => {
+    setVisibleToolPanels((current) => ({
+      ...current,
+      [panel]: !current[panel],
+    }));
+  }, []);
+  const closeToolModal = useCallback(() => {
+    setActiveToolModal(null);
+  }, []);
+  useEffect(() => {
+    if (!activeToolModal) {
+      return;
     }
 
-    if (manualOrder.side === "bid" && manualOrder.ord_type === "price") {
-      return "marketBuy";
-    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setActiveToolModal(null);
+      }
+    };
 
-    if (manualOrder.side === "ask" && manualOrder.ord_type === "market") {
-      return "marketSell";
-    }
-
-    return null;
-  }, [manualOrder.ord_type, manualOrder.side]);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [activeToolModal]);
   const manualOrderValidation = useMemo(
     () => getManualOrderValidation(manualOrder, activeTicker),
     [manualOrder, activeTicker],
@@ -1416,55 +1535,6 @@ function App() {
     [normalizedMarket],
   );
   const sessionAccounts = useMemo(() => toAssetAccounts(accounts), [accounts]);
-  const selectedBaseCurrency = useMemo(() => getMarketBaseCurrency(normalizedMarket), [normalizedMarket]);
-  const selectedAssetAccount = useMemo(
-    () =>
-      sessionAccounts.find(
-        (account) => account.currency.trim().toUpperCase() === selectedBaseCurrency,
-      ) ?? null,
-    [selectedBaseCurrency, sessionAccounts],
-  );
-  const selectedAssetBalance = useMemo(
-    () => (selectedAssetAccount ? parseAssetAmount(selectedAssetAccount.balance) : 0),
-    [selectedAssetAccount],
-  );
-  const selectedAssetBalanceText =
-    selectedAssetBalance > 0 && selectedBaseCurrency
-      ? formatAssetQuantity(selectedAssetBalance, selectedBaseCurrency)
-      : "No loaded balance";
-  const applyManualBuyAmount = useCallback(
-    (amount: number) => {
-      setManualOrder((current) => ({
-        ...current,
-        market: normalizedMarket,
-        side: "bid",
-        volume: "",
-        price: String(amount),
-        ord_type: "price",
-        time_in_force: "",
-      }));
-    },
-    [normalizedMarket],
-  );
-  const applyManualSellRatio = useCallback(
-    (ratio: number) => {
-      const volume = formatOrderVolume(selectedAssetBalance * ratio);
-      if (!volume) {
-        return;
-      }
-
-      setManualOrder((current) => ({
-        ...current,
-        market: normalizedMarket,
-        side: "ask",
-        volume,
-        price: "",
-        ord_type: "market",
-        time_in_force: "",
-      }));
-    },
-    [normalizedMarket, selectedAssetBalance],
-  );
   const applyCurrentPriceToManualOrder = useCallback(() => {
     if (!currentTradePrice) {
       return;
@@ -1476,57 +1546,69 @@ function App() {
       price: toOrderInputNumber(currentTradePrice, quoteCurrency === "KRW" ? 0 : 8),
     }));
   }, [currentTradePrice, normalizedMarket, quoteCurrency]);
-  const applyManualOrderAmountPreset = useCallback(
-    (amount: number) => {
-      const fallbackPrice = manualOrderNumbers.price ?? currentTradePrice;
-
+  const setManualOrderSide = useCallback(
+    (side: OrderRequest["side"]) => {
       setManualOrder((current) => {
-        if (current.ord_type === "price") {
-          return {
-            ...current,
-            market: normalizedMarket,
-            price: String(amount),
-            volume: "",
-          };
-        }
+        const ordType =
+          side === "bid" && current.ord_type === "market"
+            ? "price"
+            : side === "ask" && current.ord_type === "price"
+              ? "market"
+              : current.ord_type;
 
-        if (current.ord_type === "market" && current.side === "ask" && fallbackPrice) {
-          return {
-            ...current,
-            market: normalizedMarket,
-            volume: toOrderInputNumber(amount / fallbackPrice),
-          };
-        }
-
-        if (fallbackPrice) {
-          return {
-            ...current,
-            market: normalizedMarket,
-            price: current.price?.trim()
-              ? current.price
-              : toOrderInputNumber(fallbackPrice, quoteCurrency === "KRW" ? 0 : 8),
-            volume: toOrderInputNumber(amount / fallbackPrice),
-          };
-        }
-
-        return current;
+        return {
+          ...current,
+          market: normalizedMarket,
+          side,
+          ord_type: ordType,
+          price: side === "ask" && ordType === "market" ? "" : current.price,
+          volume: side === "bid" && ordType === "price" ? "" : current.volume,
+          time_in_force: ordType === "best" ? current.time_in_force : "",
+        };
       });
     },
-    [currentTradePrice, manualOrderNumbers.price, normalizedMarket, quoteCurrency],
+    [normalizedMarket],
   );
-  const applyQuickBuyAmount = useCallback(
-    (amount: string) => {
+  const setManualOrderKind = useCallback(
+    (kind: "limit" | "market" | "best") => {
+      setManualOrder((current) => {
+        if (kind === "market") {
+          return {
+            ...current,
+            market: normalizedMarket,
+            ord_type: current.side === "bid" ? "price" : "market",
+            price: current.side === "ask" ? "" : current.price,
+            volume: current.side === "bid" ? "" : current.volume,
+            time_in_force: "",
+          };
+        }
+
+        return {
+          ...current,
+          market: normalizedMarket,
+          ord_type: kind,
+          time_in_force: kind === "best" ? current.time_in_force : "",
+        };
+      });
+    },
+    [normalizedMarket],
+  );
+  const adjustManualOrderPrice = useCallback(
+    (direction: -1 | 1) => {
+      const fallbackPrice = manualOrderNumbers.price ?? currentTradePrice ?? 0;
+      if (fallbackPrice <= 0) {
+        return;
+      }
+
+      const step = quoteCurrency === "KRW" ? (manualOrder.ord_type === "price" ? 10_000 : 1_000) : 0.00000001;
+      const nextPrice = Math.max(fallbackPrice + direction * step, step);
       setManualOrder((current) => ({
         ...current,
         market: normalizedMarket,
-        side: "bid",
-        volume: "",
-        price: amount,
-        ord_type: "price",
-        time_in_force: "",
+        price: toOrderInputNumber(nextPrice, quoteCurrency === "KRW" ? 0 : 8),
       }));
     },
-    [normalizedMarket],
+    [currentTradePrice, manualOrder.ord_type, manualOrderNumbers.price, normalizedMarket, quoteCurrency],
   );
   const manualOrderEstimate = useMemo(() => {
     if (manualOrder.ord_type === "price") {
@@ -1543,52 +1625,21 @@ function App() {
 
     return null;
   }, [currentTradePrice, manualOrder.ord_type, manualOrderNumbers.price, manualOrderNumbers.volume]);
-  const manualOrderCheck = useMemo(() => {
-    const orderMarket = manualOrder.market.trim().toUpperCase();
-
-    if (!isMarketCode(orderMarket)) {
-      return { tone: "warn" as const, message: "마켓 코드를 확인하세요. 예: KRW-BTC" };
-    }
-
-    if (manualOrder.ord_type === "limit") {
-      if (!manualOrderNumbers.price || !manualOrderNumbers.volume) {
-        return { tone: "warn" as const, message: "지정가 주문은 가격과 수량을 모두 입력해야 합니다." };
-      }
-
-      return { tone: "ok" as const, message: "지정가 주문 입력이 전송 가능한 상태입니다." };
-    }
-
-    if (manualOrder.ord_type === "price") {
-      if (manualOrder.side !== "bid") {
-        return { tone: "warn" as const, message: "시장가 매수는 side=bid와 ord_type=price 조합을 사용하세요." };
-      }
-
-      if (!manualOrderNumbers.price) {
-        return { tone: "warn" as const, message: "시장가 매수는 매수 금액을 입력해야 합니다." };
-      }
-
-      return { tone: "ok" as const, message: "시장가 매수 입력이 전송 가능한 상태입니다." };
-    }
-
-    if (manualOrder.ord_type === "market") {
-      if (manualOrder.side !== "ask") {
-        return { tone: "warn" as const, message: "시장가 매도는 side=ask와 ord_type=market 조합을 사용하세요." };
-      }
-
-      if (!manualOrderNumbers.volume) {
-        return { tone: "warn" as const, message: "시장가 매도는 매도 수량을 입력해야 합니다." };
-      }
-
-      return { tone: "ok" as const, message: "시장가 매도 입력이 전송 가능한 상태입니다." };
-    }
-
-    return { tone: "ok" as const, message: "최유리 주문은 Upbit 조건을 한 번 더 확인하세요." };
-  }, [manualOrder.market, manualOrder.ord_type, manualOrder.side, manualOrderNumbers.price, manualOrderNumbers.volume]);
   const canSubmitManualOrder = manualOrderValidation.isValid && !busy && (dryRun || isKeyReady);
   const orderChance = useMemo(() => toOrderChance(chance), [chance]);
   const availableQuoteBalance = parsePositiveNumber(orderChance?.bid_account?.balance);
   const availableBaseBalance = parsePositiveNumber(orderChance?.ask_account?.balance);
-  const canEstimateVolume = Boolean(currentTradePrice && currentTradePrice > 0);
+  const manualAvailableText =
+    manualOrder.side === "bid"
+      ? `${numberFormat.format(Math.floor(availableQuoteBalance))} ${quoteCurrency}`
+      : `${toInputDecimal(availableBaseBalance, 8) || "0"} ${baseCurrency}`;
+  const manualOrderTotalText = formatOrderQuote(manualOrderEstimate, quoteCurrency);
+  const manualOrderMode =
+    manualOrder.ord_type === "limit" ? "limit" : manualOrder.ord_type === "best" ? "best" : "market";
+  const manualPriceLabel =
+    manualOrder.side === "bid" && manualOrder.ord_type === "price" ? `주문총액 (${quoteCurrency})` : `주문가격 (${quoteCurrency})`;
+  const manualVolumeDisabled = manualOrder.side === "bid" && manualOrder.ord_type === "price";
+  const manualPriceDisabled = manualOrder.side === "ask" && manualOrder.ord_type === "market";
   const filteredMarkets = useMemo(() => {
     const search = marketSearch.trim().toLowerCase();
 
@@ -1644,6 +1695,12 @@ function App() {
   }, [dryRun]);
 
   useEffect(() => {
+    if (!isKeyReady && running) {
+      setRunning(false);
+    }
+  }, [isKeyReady, running]);
+
+  useEffect(() => {
     window.localStorage.setItem(FAVORITE_MARKETS_STORAGE_KEY, JSON.stringify(favoriteMarkets));
   }, [favoriteMarkets]);
 
@@ -1692,21 +1749,6 @@ function App() {
     };
     setLogs((current) => [next, ...current].slice(0, 80));
   }, []);
-
-  const fillManualMarketBuyAmount = useCallback(
-    (amount: number) => {
-      setManualOrder((current) => ({
-        ...current,
-        market: normalizedMarket,
-        side: "bid",
-        price: toInputDecimal(amount, 0),
-        volume: "",
-        ord_type: "price",
-        time_in_force: "",
-      }));
-    },
-    [normalizedMarket],
-  );
 
   const fillManualOrderRatio = useCallback(
     (ratio: number) => {
@@ -1765,25 +1807,6 @@ function App() {
       quoteCurrency,
       ticker,
     ],
-  );
-
-  const estimateLimitVolumeFromAmount = useCallback(
-    (amount: number) => {
-      if (!ticker?.trade_price) {
-        addLog("warn", "현재가를 먼저 갱신해야 지정가 수량을 계산할 수 있습니다.");
-        return;
-      }
-
-      setManualOrder((current) => ({
-        ...current,
-        market: normalizedMarket,
-        side: current.side,
-        price: toInputDecimal(ticker.trade_price, quoteCurrency === "KRW" ? 0 : 8),
-        volume: toInputDecimal(amount / ticker.trade_price, 8),
-        ord_type: "limit",
-      }));
-    },
-    [addLog, normalizedMarket, quoteCurrency, ticker],
   );
 
   useEffect(() => {
@@ -1960,6 +1983,84 @@ function App() {
     }
     setTickStrategyStats((current) => (current.day === today ? current : createDefaultTickStrategyStats()));
   }, []);
+
+  const resetSurgeBudget = useCallback(() => {
+    const today = getKstDateParts().day;
+    if (surgeBudgetRef.current.day !== today) {
+      surgeBudgetRef.current = { day: today, spentKrw: 0 };
+    }
+  }, []);
+
+  const findSurgeCandidate = useCallback((): SurgeCandidate | null => {
+    const now = Date.now();
+    const minTradeValue = parsePositiveNumber(strategy.minTradeValueKrw, 5_000_000);
+    const buyThreshold = percentInputToRate(strategy.buyImbalanceThreshold, 58);
+    const upTickThreshold = percentInputToRate(strategy.upTickRatioThreshold, 60);
+    let bestCandidate: SurgeCandidate | null = null;
+
+    for (const marketInfo of markets) {
+      if (marketInfo.market_warning === "CAUTION" || marketInfo.market_event?.warning === true) {
+        continue;
+      }
+
+      const marketCode = marketInfo.market;
+      const tickerForMarket = marketTickers[marketCode];
+      if (!tickerForMarket || tickerForMarket.trade_price <= 0) {
+        continue;
+      }
+
+      const samples = tradeSignalSamplesRef.current.filter(
+        (sample) => sample.market === marketCode && sample.at >= now - SURGE_SAMPLE_WINDOW_MS,
+      );
+      if (samples.length < 3) {
+        continue;
+      }
+
+      const tradeValue = samples.reduce((sum, sample) => sum + sample.tradeValue, 0);
+      const bidTradeValue = samples.reduce((sum, sample) => sum + sample.bidTradeValue, 0);
+      const directionalSamples = samples.filter((sample) => sample.direction !== "flat");
+      const upTicks = directionalSamples.filter((sample) => sample.direction === "up").length;
+      const bidRate = tradeValue > 0 ? bidTradeValue / tradeValue : 0;
+      const upTickRate = directionalSamples.length > 0 ? upTicks / directionalSamples.length : 0;
+      const changeRate = tickerForMarket.signed_change_rate;
+
+      if (tradeValue < minTradeValue || bidRate < buyThreshold || upTickRate < upTickThreshold || changeRate <= 0) {
+        continue;
+      }
+
+      const liquidityScore = clampRate(tradeValue / Math.max(minTradeValue * 3, 1));
+      const bidScore = clampRate((bidRate - 0.5) / Math.max(buyThreshold - 0.5, 0.01));
+      const upTickScore = clampRate(upTickRate / Math.max(upTickThreshold, 0.01));
+      const changeScore = clampRate(changeRate / 0.08);
+      const score = 0.35 * bidScore + 0.3 * upTickScore + 0.2 * liquidityScore + 0.15 * changeScore;
+
+      if (score < SURGE_MIN_SCORE) {
+        continue;
+      }
+
+      const candidate: SurgeCandidate = {
+        market: marketCode,
+        score,
+        changeRate,
+        tradeValue,
+        bidRate,
+        upTickRate,
+        price: tickerForMarket.trade_price,
+      };
+
+      if (!bestCandidate || candidate.score > bestCandidate.score) {
+        bestCandidate = candidate;
+      }
+    }
+
+    return bestCandidate;
+  }, [
+    marketTickers,
+    markets,
+    strategy.buyImbalanceThreshold,
+    strategy.minTradeValueKrw,
+    strategy.upTickRatioThreshold,
+  ]);
 
   const buildTickStrategyStatus = useCallback(
     (nextTicker: Ticker): TickStrategyStatus => {
@@ -2296,6 +2397,227 @@ function App() {
     ],
   );
 
+  const checkSurgeStrategy = useCallback(async () => {
+    resetDailyStrategyOrderCount();
+    resetSurgeBudget();
+
+    const activePosition = strategyPosition;
+    if (activePosition) {
+      const positionTicker = marketTickers[activePosition.market];
+      const exitPrice = positionTicker?.trade_price ?? 0;
+      if (exitPrice <= 0) {
+        setTickStrategyStatus({
+          action: "wait",
+          reason: "Surge exit waiting for ticker",
+          buyScore: 0,
+          sellScore: 0,
+          buyImbalanceRate: 0,
+          sellImbalanceRate: 0,
+          upTickRate: 0,
+          consecutiveUpTicks: 0,
+          tradeValue: 0,
+          spreadRate: 0,
+          expectedRequiredRate: 0,
+          volatilityRate: 0,
+        });
+        return;
+      }
+
+      const grossReturnRate =
+        activePosition.entryPrice > 0 ? (exitPrice - activePosition.entryPrice) / activePosition.entryPrice : 0;
+      const takeProfitRate = percentInputToRate(strategy.takeProfitRate, 0.25);
+      const stopLossRate = percentInputToRate(strategy.stopLossRate, 0.2);
+      const maxHoldingMs = parsePositiveNumber(strategy.maxHoldingSec, 180) * 1000;
+      const heldMs = Date.now() - activePosition.enteredAt;
+      const shouldSell =
+        grossReturnRate >= takeProfitRate || grossReturnRate <= -stopLossRate || heldMs >= maxHoldingMs;
+
+      setTickStrategyStatus({
+        action: shouldSell ? "sell" : "wait",
+        reason: shouldSell ? `Surge exit ${formatRate(grossReturnRate)}` : `Surge holding ${formatRate(grossReturnRate)}`,
+        buyScore: 0,
+        sellScore: grossReturnRate >= takeProfitRate ? 1 : 0,
+        buyImbalanceRate: 0,
+        sellImbalanceRate: 0,
+        upTickRate: 0,
+        consecutiveUpTicks: 0,
+        tradeValue: 0,
+        spreadRate: 0,
+        expectedRequiredRate: 0,
+        volatilityRate: 0,
+      });
+
+      if (!shouldSell) {
+        return;
+      }
+
+      const baseCurrencyForPosition = activePosition.market.split("-")[1] ?? "";
+      const accountVolume = sessionAccounts.find(
+        (account) => account.currency.trim().toUpperCase() === baseCurrencyForPosition,
+      );
+      const liveVolume = accountVolume ? parseAssetAmount(accountVolume.balance) : activePosition.volume;
+      const sellVolume = dryRunRef.current ? activePosition.volume : Math.min(activePosition.volume, liveVolume);
+      if (sellVolume <= 0) {
+        setRunning(false);
+        addLog("error", "Surge sell blocked: available balance is zero.");
+        return;
+      }
+
+      lastTradeAtRef.current = Date.now();
+      await invokeOrder({
+        market: activePosition.market,
+        side: "ask",
+        volume: toInputDecimal(sellVolume, 8),
+        ord_type: "market",
+        identifier: `surgesell${Date.now().toString(36).slice(-10)}`,
+      });
+
+      const configuredFeeRate = percentInputToRate(strategy.feeRate, 0.05);
+      const slippageRate = percentInputToRate(strategy.slippageRate, 0.03);
+      const grossPnl = (exitPrice - activePosition.entryPrice) * sellVolume;
+      const estimatedCost =
+        activePosition.quoteAmount * configuredFeeRate + exitPrice * sellVolume * (configuredFeeRate + slippageRate);
+      const netPnl = grossPnl - estimatedCost;
+      setStrategyPosition(null);
+      strategyOrderCountRef.current.count += 1;
+      setTickStrategyStats((current) => {
+        const nextRealizedPnl = current.realizedPnl + netPnl;
+        const isWin = netPnl >= 0;
+        return {
+          ...current,
+          trades: current.trades + 1,
+          wins: current.wins + (isWin ? 1 : 0),
+          losses: current.losses + (isWin ? 0 : 1),
+          consecutiveLosses: isWin ? 0 : current.consecutiveLosses + 1,
+          realizedPnl: nextRealizedPnl,
+          realizedPnlRate: nextRealizedPnl / SURGE_DAILY_BUDGET_KRW,
+        };
+      });
+      addLog("info", `Surge exit: ${activePosition.market}, estimated PnL ${formatTradeValue(netPnl)}`);
+      return;
+    }
+
+    if (!isKstWeekdayNineEntryWindow()) {
+      setSurgeCandidate(null);
+      setTickStrategyStatus({
+        action: "wait",
+        reason: "Surge waits for weekday 09:00 KST window",
+        buyScore: 0,
+        sellScore: 0,
+        buyImbalanceRate: 0,
+        sellImbalanceRate: 0,
+        upTickRate: 0,
+        consecutiveUpTicks: 0,
+        tradeValue: 0,
+        spreadRate: 0,
+        expectedRequiredRate: 0,
+        volatilityRate: 0,
+      });
+      return;
+    }
+
+    if (!isKeyReady) {
+      setRunning(false);
+      addLog("error", "Surge trading requires a linked Upbit account.");
+      return;
+    }
+
+    const maxDailyOrders = Math.floor(parsePositiveNumber(strategy.maxDailyOrders, 20));
+    if (strategyOrderCountRef.current.count >= maxDailyOrders) {
+      addLog("warn", "Surge daily order limit reached.");
+      return;
+    }
+
+    const candidate = findSurgeCandidate();
+    setSurgeCandidate(candidate);
+    if (!candidate) {
+      setTickStrategyStatus({
+        action: "wait",
+        reason: "No surge candidate",
+        buyScore: 0,
+        sellScore: 0,
+        buyImbalanceRate: 0,
+        sellImbalanceRate: 0,
+        upTickRate: 0,
+        consecutiveUpTicks: 0,
+        tradeValue: 0,
+        spreadRate: 0,
+        expectedRequiredRate: 0,
+        volatilityRate: 0,
+      });
+      return;
+    }
+
+    const requestedBuyKrw = parsePositiveNumber(strategy.buyKrw, SURGE_DEFAULT_BUY_KRW);
+    const configuredMaxPosition = parsePositiveNumber(strategy.maxPositionKrw, SURGE_MAX_BUY_KRW);
+    const maxPositionKrw = Math.min(configuredMaxPosition, SURGE_MAX_BUY_KRW);
+    const remainingBudget = Math.max(SURGE_DAILY_BUDGET_KRW - surgeBudgetRef.current.spentKrw, 0);
+    const buyKrw = Math.min(requestedBuyKrw, maxPositionKrw, remainingBudget);
+    const minOrderKrw = parsePositiveNumber(strategy.minOrderKrw, 10_000);
+
+    setTickStrategyStatus({
+      action: buyKrw >= minOrderKrw ? "buy" : "wait",
+      reason: buyKrw >= minOrderKrw ? `Surge candidate ${candidate.market}` : "Surge budget/min order blocked",
+      buyScore: candidate.score,
+      sellScore: 0,
+      buyImbalanceRate: candidate.bidRate,
+      sellImbalanceRate: 0,
+      upTickRate: candidate.upTickRate,
+      consecutiveUpTicks: 0,
+      tradeValue: candidate.tradeValue,
+      spreadRate: 0,
+      expectedRequiredRate: 0,
+      volatilityRate: candidate.changeRate,
+    });
+
+    if (buyKrw < minOrderKrw) {
+      return;
+    }
+
+    lastTradeAtRef.current = Date.now();
+    setMarket(candidate.market);
+    await invokeOrder({
+      market: candidate.market,
+      side: "bid",
+      price: toInputDecimal(buyKrw, 0),
+      ord_type: "price",
+      identifier: `surgebuy${Date.now().toString(36).slice(-11)}`,
+    });
+
+    surgeBudgetRef.current = {
+      ...surgeBudgetRef.current,
+      spentKrw: surgeBudgetRef.current.spentKrw + buyKrw,
+    };
+    strategyOrderCountRef.current.count += 1;
+    setStrategyPosition({
+      market: candidate.market,
+      entryPrice: candidate.price,
+      volume: candidate.price > 0 ? buyKrw / candidate.price : 0,
+      quoteAmount: buyKrw,
+      enteredAt: Date.now(),
+    });
+    addLog("info", `Surge entry: ${candidate.market}, ${formatTradeValue(buyKrw)}, score ${candidate.score.toFixed(2)}`);
+  }, [
+    addLog,
+    findSurgeCandidate,
+    invokeOrder,
+    isKeyReady,
+    marketTickers,
+    resetDailyStrategyOrderCount,
+    resetSurgeBudget,
+    sessionAccounts,
+    strategy.buyKrw,
+    strategy.feeRate,
+    strategy.maxDailyOrders,
+    strategy.maxHoldingSec,
+    strategy.maxPositionKrw,
+    strategy.minOrderKrw,
+    strategy.slippageRate,
+    strategy.stopLossRate,
+    strategy.takeProfitRate,
+    strategyPosition,
+  ]);
+
   const checkStrategy = useCallback(
     async (nextTicker: Ticker) => {
       if (!running) {
@@ -2308,6 +2630,11 @@ function App() {
       const elapsed = Date.now() - lastTradeAtRef.current;
 
       if (elapsed < cooldownMs) {
+        return;
+      }
+
+      if (strategy.mode === "surge") {
+        await checkSurgeStrategy();
         return;
       }
 
@@ -2435,6 +2762,7 @@ function App() {
     [
       addLog,
       buildTickStrategyStatus,
+      checkSurgeStrategy,
       candles,
       invokeOrder,
       normalizedMarket,
@@ -2627,6 +2955,7 @@ function App() {
             total_bid_size: Number(item.total_bid_size) || 0,
             spread: Number(item.spread) || 0,
             spread_rate: Number(item.spread_rate) || 0,
+            orderbook_units: parseOrderbookUnits(item.orderbook_units),
             received_at: Number(item.received_at) || Date.now(),
             exchange_timestamp: typeof item.exchange_timestamp === "number" ? item.exchange_timestamp : null,
           },
@@ -2833,18 +3162,56 @@ function App() {
   return (
     <main className="app-shell">
       <section className="topbar">
-        <div>
-          <span className="eyebrow">Upbit Desktop Trader</span>
-          <h1>Autobo</h1>
+        <div className="topbar-brand">
+          <strong className="autobo-logo">AutoBo</strong>
         </div>
         <div className="status-strip">
-          <span className={dryRun ? "pill warning" : "pill danger"}>
-            {dryRun ? "모의 실행" : "실거래"}
-          </span>
           <span className={running ? "pill active" : "pill"}>{running ? "자동 감시 중" : "정지"}</span>
+          <span className="pill topbar-clock">{nowText()}</span>
         </div>
       </section>
 
+      <section className="tool-toggle-bar" aria-label="보조 기능">
+        <button
+          className={visibleToolPanels.market ? "selected" : ""}
+          type="button"
+          aria-pressed={visibleToolPanels.market}
+          onClick={() => toggleToolPanel("market")}
+        >
+          <BarChart3 size={16} />
+          시세
+        </button>
+        <button
+          className={activeToolModal === "account" ? "selected" : ""}
+          type="button"
+          aria-pressed={activeToolModal === "account"}
+          onClick={() => setActiveToolModal("account")}
+        >
+          <Wallet size={16} />
+          계좌
+        </button>
+        <button
+          className={activeToolModal === "manual" ? "selected" : ""}
+          type="button"
+          aria-pressed={activeToolModal === "manual"}
+          onClick={() => setActiveToolModal("manual")}
+        >
+          <Send size={16} />
+          수동주문
+        </button>
+        <button
+          className={activeToolModal === "debug" ? "selected" : ""}
+          type="button"
+          aria-pressed={activeToolModal === "debug"}
+          onClick={() => setActiveToolModal("debug")}
+        >
+          <Activity size={16} />
+          로그
+        </button>
+      </section>
+
+      {visibleToolPanels.market ? (
+      <>
       <section className="market-band">
         <div className="quote">
           <label htmlFor="market">마켓</label>
@@ -2979,6 +3346,10 @@ function App() {
                 const itemTicker = marketTickers[item.market];
                 const itemTradeVolume = tradeVolumes[item.market];
                 const isFavorite = favoriteMarketSet.has(item.market);
+                const itemTone = itemTicker ? (itemTicker.signed_change_price >= 0 ? "up" : "down") : "";
+                const [itemQuote = "", itemBase = ""] = item.market.split("-");
+                const itemDisplayCode = itemBase && itemQuote ? `${itemBase}/${itemQuote}` : item.market;
+                const itemTradeValue = itemTicker?.acc_trade_price_24h ?? itemTradeVolume?.accumulated_trade_value;
 
                 return (
                   <div className="market-row-shell" key={item.market}>
@@ -2996,20 +3367,28 @@ function App() {
                       type="button"
                       onClick={() => setMarket(item.market)}
                     >
-                      <span>
+                      <span className={`market-row-direction ${itemTone}`} aria-hidden="true" />
+                      <span className="market-row-name">
                         <strong>{item.korean_name}</strong>
-                        <em>{item.english_name}</em>
+                        <em>{itemDisplayCode}</em>
                       </span>
-                      <span className="market-row-meta">
-                        <strong className={itemTicker ? (itemTicker.signed_change_price >= 0 ? "up" : "down") : ""}>
-                          {itemTicker ? formatMarketPrice(item.market, itemTicker.trade_price) : "-"}
+                      <span className="market-row-price">
+                        <strong className={itemTone}>
+                          {itemTicker ? formatMarketListPrice(item.market, itemTicker.trade_price) : "-"}
                         </strong>
-                        <em className={itemTicker ? (itemTicker.signed_change_price >= 0 ? "up" : "down") : ""}>
-                          {itemTicker ? `${itemTicker.signed_change_rate >= 0 ? "+" : ""}${percentFormat.format(itemTicker.signed_change_rate * 100)}%` : "-"}
+                      </span>
+                      <span className="market-row-change">
+                        <strong className={itemTone}>
+                          {itemTicker
+                            ? `${itemTicker.signed_change_rate >= 0 ? "+" : ""}${percentFormat.format(itemTicker.signed_change_rate * 100)}%`
+                            : "-"}
+                        </strong>
+                        <em className={itemTone}>
+                          {itemTicker ? formatMarketListChangePrice(itemTicker.signed_change_price) : "-"}
                         </em>
-                        <em>{itemTradeVolume ? formatTradeValue(itemTradeVolume.accumulated_trade_value) : "실시간 대기"}</em>
-                        <em>{itemTradeVolume ? formatTradeVolume(item.market, itemTradeVolume.accumulated_volume) : "-"}</em>
-                        <code>{item.market}</code>
+                      </span>
+                      <span className="market-row-value">
+                        <strong>{formatMarketListTradeValue(itemTradeValue)}</strong>
                       </span>
                     </button>
                   </div>
@@ -3059,41 +3438,128 @@ function App() {
             ) : null}
           </div>
         </article>
-      </section>
 
-      <section className="grid">
-        <article className="panel credentials">
-          <div className="panel-title">
-            <KeyRound size={18} />
-            <h2>계좌 API</h2>
+        <article className="panel orderbook-panel">
+          <div className="orderbook-tabs" aria-label="호가 보기">
+            <span className="selected">일반호가</span>
+            <span>누적호가</span>
+            <span>호가주문</span>
           </div>
-          <div className={`state-box account-state ${accountStatus}`}>
-            {accountStatus === "checking"
-              ? "upbitkey 파일을 확인하는 중입니다."
-              : accountStatus === "linked"
-                ? "연동되었습니다"
-                : "계좌 연동에 실패했습니다"}
+          <div className="orderbook-summary">
+            <div>
+              <span>스프레드</span>
+              <strong>{selectedOrderbook ? formatMarketPrice(normalizedMarket, selectedOrderbook.spread) : "-"}</strong>
+              <em>{selectedOrderbook ? formatRate(selectedOrderbook.spread_rate) : "대기"}</em>
+            </div>
+            <div>
+              <span>총 매도 / 매수</span>
+              <strong>
+                {selectedOrderbook
+                  ? `${formatOrderbookSize(selectedOrderbook.total_ask_size)} / ${formatOrderbookSize(selectedOrderbook.total_bid_size)}`
+                  : "-"}
+              </strong>
+              <em>{baseCurrency || "BTC"}</em>
+            </div>
           </div>
-          <label className="switch">
-            <input type="checkbox" checked={dryRun} onChange={(event) => setDryRun(event.currentTarget.checked)} />
-            <span>주문 모의 실행</span>
-          </label>
-          <button className="secondary-button" type="button" disabled={busy || !isKeyReady} onClick={handleRefreshPrivateData}>
-            <Wallet size={17} />
-            잔고/주문 가능정보 조회
-          </button>
-          <button className="secondary-button" type="button" disabled={busy || !isKeyReady} onClick={handleOpenAssetWindow}>
-            <Wallet size={17} />
-            자산 창 열기
-          </button>
-          <button className="subtle-button" type="button" onClick={handleResetUserPreferences}>
-            <RotateCcw size={16} />
-            화면 설정 초기화
-          </button>
-          <p className="note">
-            실행 파일과 같은 폴더의 upbitkey 파일에서 API 키를 읽으며, 화면 설정과 입력값만 이 기기에 저장됩니다.
-          </p>
+          <div className="orderbook-ladder" aria-label={`${normalizedMarket} 호가창`}>
+            {selectedOrderbook && orderbookView.askRows.length > 0 ? (
+              <>
+                {orderbookView.askRows.map((row) => {
+                  const depth = orderbookView.maxSize > 0 ? Math.max((row.size / orderbookView.maxSize) * 100, 3) : 0;
+
+                  return (
+                    <div className="orderbook-row ask" key={`ask-${row.price}`}>
+                      <span className="orderbook-size left">
+                        <span className="depth" style={{ width: `${depth}%` }} />
+                        <span>{formatOrderbookSize(row.size)}</span>
+                      </span>
+                      <strong className="orderbook-price">{formatOrderbookPrice(normalizedMarket, row.price)}</strong>
+                      <span className="orderbook-size right muted">-</span>
+                    </div>
+                  );
+                })}
+                <div className="orderbook-mid">
+                  <strong>{activeTicker ? formatMarketPrice(normalizedMarket, activeTicker.trade_price) : "-"}</strong>
+                  <span className={activeTicker ? (activeTicker.signed_change_price >= 0 ? "up" : "down") : ""}>
+                    {activeTicker
+                      ? `${activeTicker.signed_change_price >= 0 ? "+" : ""}${percentFormat.format(activeTicker.signed_change_rate * 100)}%`
+                      : "현재가 대기"}
+                  </span>
+                </div>
+                {orderbookView.bidRows.map((row) => {
+                  const depth = orderbookView.maxSize > 0 ? Math.max((row.size / orderbookView.maxSize) * 100, 3) : 0;
+
+                  return (
+                    <div className="orderbook-row bid" key={`bid-${row.price}`}>
+                      <span className="orderbook-size left muted">-</span>
+                      <strong className="orderbook-price">{formatOrderbookPrice(normalizedMarket, row.price)}</strong>
+                      <span className="orderbook-size right">
+                        <span className="depth" style={{ width: `${depth}%` }} />
+                        <span>{formatOrderbookSize(row.size)}</span>
+                      </span>
+                    </div>
+                  );
+                })}
+              </>
+            ) : (
+              <div className="state-box">호가 WebSocket 스냅샷을 기다리는 중입니다.</div>
+            )}
+          </div>
+          <div className="orderbook-footer">
+            <span>{quoteCurrency} 기준</span>
+            <strong>
+              {selectedOrderbook
+                ? new Date(selectedOrderbook.received_at).toLocaleTimeString("ko-KR", { hour12: false })
+                : "-"}
+            </strong>
+          </div>
         </article>
+
+      <section className="grid action-grid">
+        {activeToolModal === "account" ? (
+          <div className="tool-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeToolModal()}>
+            <section className="tool-modal-panel account-modal" role="dialog" aria-modal="true" aria-labelledby="account-modal-title">
+              <div className="tool-modal-header">
+                <h2 id="account-modal-title">계좌</h2>
+                <button className="icon-button modal-close-button" type="button" aria-label="닫기" onClick={closeToolModal}>
+                  <X size={18} />
+                </button>
+              </div>
+              <article className="panel credentials modal-content-panel">
+                <div className="panel-title">
+                  <KeyRound size={18} />
+                  <h2>계좌 API</h2>
+                </div>
+                <div className={`state-box account-state ${accountStatus}`}>
+                  {accountStatus === "checking"
+                    ? "upbitkey 파일을 확인하는 중입니다."
+                    : accountStatus === "linked"
+                      ? "연동되었습니다"
+                      : "계좌 연동에 실패했습니다"}
+                </div>
+                <label className="switch">
+                  <input type="checkbox" checked={dryRun} onChange={(event) => setDryRun(event.currentTarget.checked)} />
+                  <span>주문 모의 실행</span>
+                </label>
+                <button className="secondary-button" type="button" disabled={busy || !isKeyReady} onClick={handleRefreshPrivateData}>
+                  <Wallet size={17} />
+                  잔고/주문 가능정보 조회
+                </button>
+                <button className="secondary-button" type="button" disabled={busy || !isKeyReady} onClick={handleOpenAssetWindow}>
+                  <Wallet size={17} />
+                  자산 창 열기
+                </button>
+                <button className="subtle-button" type="button" onClick={handleResetUserPreferences}>
+                  <RotateCcw size={16} />
+                  화면 설정 초기화
+                </button>
+                <p className="note">
+                  실행 파일과 같은 폴더의 upbitkey 파일에서 API 키를 읽으며, 화면 설정과 입력값만 이 기기에 저장됩니다.
+                </p>
+              </article>
+            </section>
+          </div>
+        ) : null}
 
         <article className="panel strategy">
           <div className="panel-title">
@@ -3116,6 +3582,22 @@ function App() {
               onClick={() => setStrategy((current) => ({ ...current, mode: "tick" }))}
             >
               틱 신호
+            </button>
+            <button
+              className={strategy.mode === "surge" ? "selected" : ""}
+              type="button"
+              aria-pressed={strategy.mode === "surge"}
+              onClick={() =>
+                setStrategy((current) => ({
+                  ...current,
+                  mode: "surge",
+                  buyKrw: String(SURGE_DEFAULT_BUY_KRW),
+                  maxPositionKrw: String(SURGE_MAX_BUY_KRW),
+                  maxExposureKrw: String(SURGE_DAILY_BUDGET_KRW),
+                }))
+              }
+            >
+              Surge 09
             </button>
           </div>
           {strategy.mode === "price" ? (
@@ -3455,380 +3937,310 @@ function App() {
                 <strong>{`${tickStrategyStats.wins}/${tickStrategyStats.losses}, 연속손실 ${tickStrategyStats.consecutiveLosses}`}</strong>
                 <span>가상 포지션</span>
                 <strong>
-                  {strategyPosition?.market === normalizedMarket
-                    ? `${formatMarketPrice(normalizedMarket, strategyPosition.entryPrice)} / ${strategyPosition.volume.toFixed(8)}`
+                  {strategyPosition
+                    ? `${strategyPosition.market} ${formatMarketPrice(strategyPosition.market, strategyPosition.entryPrice)} / ${strategyPosition.volume.toFixed(8)}`
                     : "없음"}
                 </strong>
+                {strategy.mode === "surge" ? (
+                  <>
+                    <span>Surge pick</span>
+                    <strong>
+                      {surgeCandidate
+                        ? `${surgeCandidate.market} score ${surgeCandidate.score.toFixed(2)} / ${formatTradeValue(surgeCandidate.tradeValue)}`
+                        : "waiting"}
+                    </strong>
+                    <span>Surge budget</span>
+                    <strong>{`${formatTradeValue(surgeBudgetRef.current.spentKrw)} / ${formatTradeValue(SURGE_DAILY_BUDGET_KRW)}`}</strong>
+                  </>
+                ) : null}
               </div>
             </>
           )}
-          <div className="button-row">
-            <button
-              className={running ? "danger-button" : "primary-button"}
-              type="button"
-              onClick={() => {
-                setRunning((value) => !value);
-                addLog(running ? "warn" : "info", running ? "자동 감시를 정지했습니다." : "자동 감시를 시작했습니다.");
-              }}
-            >
-              {running ? <Square size={17} /> : <Play size={17} />}
-              {running ? "정지" : "시작"}
-            </button>
-          </div>
+          {isKeyReady ? (
+            <div className="button-row">
+              <button
+                className={running ? "danger-button" : "primary-button"}
+                type="button"
+                onClick={() => {
+                  setRunning((value) => !value);
+                  addLog(running ? "warn" : "info", running ? "자동 감시를 정지했습니다." : "자동 감시를 시작했습니다.");
+                }}
+              >
+                {running ? <Square size={17} /> : <Play size={17} />}
+                {running ? "정지" : "시작"}
+              </button>
+            </div>
+          ) : (
+            <div className="state-box">계좌 연동 성공 후 자동매매 버튼이 표시됩니다.</div>
+          )}
           <p className="note">
             가격 조건은 기존 주문 경로를 사용합니다. 틱 신호는 체결/호가 기반 dry-run 전용 가상 포지션으로 먼저 검증합니다.
           </p>
         </article>
 
-        <article className="panel manual">
-          <div className="panel-title">
-            <Send size={18} />
-            <h2>수동 주문</h2>
-          </div>
-          <div className="preset-control" aria-label="수동 주문 프리셋">
-            <button
-              className={activeManualOrderPreset === "limit" ? "selected" : ""}
-              type="button"
-              aria-pressed={activeManualOrderPreset === "limit"}
-              onClick={() => applyManualOrderPreset("limit")}
-            >
-              <ListChecks size={15} />
-              지정가
-            </button>
-            <button
-              className={activeManualOrderPreset === "marketBuy" ? "selected" : ""}
-              type="button"
-              aria-pressed={activeManualOrderPreset === "marketBuy"}
-              onClick={() => applyManualOrderPreset("marketBuy")}
-            >
-              <ListChecks size={15} />
-              시장가 매수
-            </button>
-            <button
-              className={activeManualOrderPreset === "marketSell" ? "selected" : ""}
-              type="button"
-              aria-pressed={activeManualOrderPreset === "marketSell"}
-              onClick={() => applyManualOrderPreset("marketSell")}
-            >
-              <ListChecks size={15} />
-              시장가 매도
-            </button>
-          </div>
-          <div className="quick-fill-panel" aria-label="Manual order quick fill">
-            <div className="quick-fill-group">
-              <span>Market buy amount</span>
-              <div className="quick-fill-buttons">
-                {manualBuyQuickAmounts.map((amount) => (
-                  <button
-                    className="quick-fill-button"
-                    key={amount}
-                    type="button"
-                    onClick={() => applyManualBuyAmount(amount)}
-                  >
-                    {formatQuickKrwAmount(amount)}
-                  </button>
-                ))}
+        {activeToolModal === "manual" ? (
+          <div className="tool-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeToolModal()}>
+            <section className="tool-modal-panel manual-modal" role="dialog" aria-modal="true" aria-labelledby="manual-modal-title">
+              <div className="tool-modal-header">
+                <h2 id="manual-modal-title">수동 주문</h2>
+                <button className="icon-button modal-close-button" type="button" aria-label="닫기" onClick={closeToolModal}>
+                  <X size={18} />
+                </button>
               </div>
-            </div>
-            <div className="quick-fill-group">
-              <span>Sell from balance</span>
-              <em>{selectedAssetBalanceText}</em>
-              <div className="quick-fill-buttons">
-                {manualSellQuickRatios.map((ratio) => (
-                  <button
-                    className="quick-fill-button"
-                    disabled={selectedAssetBalance <= 0}
-                    key={ratio}
-                    type="button"
-                    onClick={() => applyManualSellRatio(ratio)}
-                  >
-                    {formatSellRatioLabel(ratio)}
-                  </button>
-                ))}
-              </div>
-            </div>
+        <article className={`panel manual manual-order-card ${manualOrder.side} modal-content-panel`}>
+          <div className="manual-order-tabs" aria-label="수동 주문 탭">
+            <button
+              className={manualOrder.side === "bid" ? "selected" : ""}
+              type="button"
+              aria-pressed={manualOrder.side === "bid"}
+              onClick={() => setManualOrderSide("bid")}
+            >
+              매수
+            </button>
+            <button
+              className={manualOrder.side === "ask" ? "selected" : ""}
+              type="button"
+              aria-pressed={manualOrder.side === "ask"}
+              onClick={() => setManualOrderSide("ask")}
+            >
+              매도
+            </button>
+            <button type="button" onClick={() => applyManualOrderPreset("marketBuy")}>
+              간편주문
+            </button>
+            <button type="button" disabled>
+              거래내역
+            </button>
           </div>
-          <div className="manual-assist">
-            <div className="manual-assist-meta">
-              <span>
-                {quoteCurrency} / {baseCurrency}
+
+          <div className="manual-order-body">
+            <div className="manual-order-row order-type-row">
+              <span className="manual-order-label">
+                주문구분 <span className="help-dot">?</span>
               </span>
-              <strong>{activeTicker ? formatMarketPrice(normalizedMarket, activeTicker.trade_price) : "현재가 대기"}</strong>
-            </div>
-            <div className="manual-assist-actions">
-              <button
-                className="subtle-button"
-                type="button"
-                disabled={!activeTicker || manualOrder.ord_type === "price"}
-                onClick={applyCurrentPriceToManualOrder}
-              >
-                <Calculator size={15} />
-                현재가 가격
-              </button>
-              {quickBuyAmounts.map((amount) => (
-                <button className="subtle-button" type="button" key={amount.value} onClick={() => applyQuickBuyAmount(amount.value)}>
-                  <Calculator size={15} />
-                  {amount.label} {quoteCurrency}
+              <div className="manual-order-types">
+                <button
+                  className={manualOrderMode === "limit" ? "selected" : ""}
+                  type="button"
+                  aria-pressed={manualOrderMode === "limit"}
+                  onClick={() => setManualOrderKind("limit")}
+                >
+                  지정가
                 </button>
-              ))}
-            </div>
-            <div className="manual-estimate">
-              <Calculator size={16} />
-              <span>{manualAssistSummary}</span>
-            </div>
-          </div>
-          <div className="manual-helper">
-            <div className="manual-helper-header">
-              <span>빠른 입력</span>
-              <em>
-                가능 {numberFormat.format(Math.floor(availableQuoteBalance))} {quoteCurrency} /{" "}
-                {toInputDecimal(availableBaseBalance, 8) || "0"} {baseCurrency}
-              </em>
-            </div>
-            <div className="quick-fill-group" aria-label="시장가 매수 금액">
-              <span>시장가 매수</span>
-              {manualBuyQuickAmounts.map((amount) => (
-                <button type="button" key={amount} onClick={() => fillManualMarketBuyAmount(amount)}>
-                  {numberFormat.format(amount)}원
+                <button
+                  className={manualOrderMode === "market" ? "selected" : ""}
+                  type="button"
+                  aria-pressed={manualOrderMode === "market"}
+                  onClick={() => setManualOrderKind("market")}
+                >
+                  시장가
                 </button>
-              ))}
-            </div>
-            <div className="quick-fill-group" aria-label="가능 잔고 비율">
-              <span>가능 잔고</span>
-              {quickOrderRatios.map((ratio) => (
-                <button type="button" key={ratio} onClick={() => fillManualOrderRatio(ratio)}>
-                  {ratio}%
+                <button
+                  className={manualOrderMode === "best" ? "selected" : ""}
+                  type="button"
+                  aria-pressed={manualOrderMode === "best"}
+                  onClick={() => setManualOrderKind("best")}
+                >
+                  최유리
                 </button>
-              ))}
+              </div>
             </div>
-            <div className="quick-fill-group" aria-label="현재가 기준 지정가 수량">
-              <span>현재가 기준</span>
-              {manualBuyQuickAmounts.map((amount) => (
-                <button type="button" key={amount} disabled={!canEstimateVolume} onClick={() => estimateLimitVolumeFromAmount(amount)}>
-                  {numberFormat.format(amount)}원
+
+            <div className="manual-order-row availability-row">
+              <span className="manual-order-label">주문가능</span>
+              <strong>{manualAvailableText}</strong>
+            </div>
+
+            <label className="manual-order-row field-row">
+              <span className="manual-order-label">{manualPriceLabel}</span>
+              <div className="input-stepper">
+                <input
+                  value={manualOrder.price ?? ""}
+                  inputMode="decimal"
+                  disabled={manualPriceDisabled}
+                  placeholder={manualPriceDisabled ? "시장가 매도" : "0"}
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setManualOrder((current) => ({ ...current, price: value }));
+                  }}
+                />
+                <button type="button" disabled={manualPriceDisabled} onClick={() => adjustManualOrderPrice(-1)}>
+                  -
                 </button>
-              ))}
-            </div>
-          </div>
-          <div className="form-grid">
-            <label>
-              side
-              <select
-                value={manualOrder.side}
-                onChange={(event) => {
-                  const value = event.currentTarget.value as OrderRequest["side"];
-                  setManualOrder((current) => ({ ...current, side: value }));
-                }}
-              >
-                <option value="bid">bid 매수</option>
-                <option value="ask">ask 매도</option>
-              </select>
+                <button type="button" disabled={manualPriceDisabled} onClick={() => adjustManualOrderPrice(1)}>
+                  +
+                </button>
+              </div>
             </label>
-            <label>
-              ord_type
-              <select
-                value={manualOrder.ord_type}
-                onChange={(event) => {
-                  const value = event.currentTarget.value as OrderRequest["ord_type"];
-                  setManualOrder((current) => ({
-                    ...current,
-                    ord_type: value,
-                  }));
-                }}
-              >
-                <option value="limit">limit 지정가</option>
-                <option value="price">price 시장가 매수</option>
-                <option value="market">market 시장가 매도</option>
-                <option value="best">best 최유리</option>
-              </select>
-            </label>
-            <label>
-              가격/매수금액
+
+            <label className="manual-order-row field-row">
+              <span className="manual-order-label">주문수량 ({baseCurrency || "수량"})</span>
               <input
-                value={manualOrder.price ?? ""}
-                inputMode="decimal"
-                onChange={(event) => {
-                  const value = event.currentTarget.value;
-                  setManualOrder((current) => ({ ...current, price: value }));
-                }}
-              />
-            </label>
-            <label>
-              수량
-              <input
+                className="manual-order-input"
                 value={manualOrder.volume ?? ""}
                 inputMode="decimal"
+                disabled={manualVolumeDisabled}
+                placeholder={manualVolumeDisabled ? "시장가 매수" : "0"}
                 onChange={(event) => {
                   const value = event.currentTarget.value;
                   setManualOrder((current) => ({ ...current, volume: value }));
                 }}
               />
             </label>
-            <label>
-              identifier
-              <input
-                value={manualOrder.identifier ?? ""}
-                onChange={(event) => {
-                  const value = event.currentTarget.value;
-                  setManualOrder((current) => ({ ...current, identifier: value }));
-                }}
-              />
-            </label>
-            <label>
-              time_in_force
-              <select
-                value={manualOrder.time_in_force ?? ""}
-                onChange={(event) => {
-                  const value = event.currentTarget.value;
-                  setManualOrder((current) => ({ ...current, time_in_force: value }));
-                }}
-              >
-                <option value="">없음</option>
-                <option value="ioc">ioc</option>
-                <option value="fok">fok</option>
-                <option value="post_only">post_only</option>
-              </select>
-            </label>
-          </div>
-          <div className="order-assist">
-            <div className="order-assist-header">
-              <span>
-                <Calculator size={16} />
-                주문 도우미
-              </span>
-              <button
-                className="text-button"
-                type="button"
-                disabled={!currentTradePrice}
-                onClick={applyCurrentPriceToManualOrder}
-              >
-                현재가 입력
-              </button>
-            </div>
-            <div className="quick-amounts" aria-label="주문 금액 빠른 계산">
-              {orderAmountPresets.map((amount) => (
-                <button
-                  className="subtle-button"
-                  key={amount}
-                  type="button"
-                  disabled={manualOrder.ord_type !== "price" && !manualOrderNumbers.price && !currentTradePrice}
-                  onClick={() => applyManualOrderAmountPreset(amount)}
-                >
-                  {numberFormat.format(amount)} KRW
+
+            <div className="manual-ratio-buttons" aria-label="가능 잔고 비율">
+              {[10, ...quickOrderRatios].map((ratio) => (
+                <button type="button" key={ratio} onClick={() => fillManualOrderRatio(ratio)}>
+                  {ratio}%
                 </button>
               ))}
+              <button type="button" onClick={applyCurrentPriceToManualOrder} disabled={!currentTradePrice || manualPriceDisabled}>
+                현재가
+              </button>
             </div>
-            <dl className="order-summary">
-              <div>
-                <dt>마켓</dt>
-                <dd>{normalizedMarket}</dd>
-              </div>
-              <div>
-                <dt>현재가</dt>
-                <dd>{currentTradePrice ? formatOrderQuote(currentTradePrice, quoteCurrency) : "-"}</dd>
-              </div>
-              <div>
-                <dt>예상 주문액</dt>
-                <dd>{formatOrderQuote(manualOrderEstimate, quoteCurrency)}</dd>
-              </div>
-              <div>
-                <dt>기준 자산</dt>
-                <dd>{baseCurrency || "-"}</dd>
-              </div>
-            </dl>
-            <div className={`order-check ${manualOrderCheck.tone}`}>{manualOrderCheck.message}</div>
-          </div>
-          <div className={`order-preview ${manualOrderValidation.isValid ? "ready" : "blocked"}`}>
-            <div>
-              <strong>{manualOrderValidation.title}</strong>
-              <span>{manualOrderValidation.summary}</span>
-            </div>
-            <em>{manualOrderValidation.estimate}</em>
-            {manualOrderValidation.errors.length > 0 ? (
-              <ul>
-                {manualOrderValidation.errors.map((message) => (
-                  <li key={message}>{message}</li>
-                ))}
-              </ul>
-            ) : null}
-            {manualOrderValidation.warnings.length > 0 ? (
-              <ul className="warning-list">
-                {manualOrderValidation.warnings.map((message) => (
-                  <li key={message}>{message}</li>
-                ))}
-              </ul>
-            ) : null}
-          </div>
-          <button
-            className="primary-button"
-            type="button"
-            disabled={!canSubmitManualOrder}
-            onClick={handleManualOrder}
-          >
-            <Send size={17} />
-            주문 전송
-          </button>
-        </article>
 
-        <article className="panel risk">
-          <div className="panel-title">
-            <ShieldCheck size={18} />
-            <h2>실거래 체크</h2>
-          </div>
-          <ul className="checklist">
-            <li>기본값은 모의 실행이며, 실거래 전 체크박스를 해제해야 합니다.</li>
-            <li>API Key는 필요한 권한만 부여하고 허용 IP를 등록하세요.</li>
-            <li>전략은 단순 가격 조건입니다. 슬리피지, 수수료, 체결 지연은 별도 검증이 필요합니다.</li>
-          </ul>
-          <div className="warning-box">
-            <AlertTriangle size={18} />
-            <span>자동매매는 손실이 발생할 수 있습니다. 작은 금액과 모의 실행으로 먼저 검증하세요.</span>
+            <label className="manual-order-row field-row">
+              <span className="manual-order-label">주문총액 ({quoteCurrency})</span>
+              <input className="manual-order-input" value={manualOrderTotalText} readOnly />
+            </label>
+
+            <details className="manual-advanced">
+              <summary>고급 주문 옵션</summary>
+              <div className="manual-advanced-grid">
+                <label>
+                  identifier
+                  <input
+                    value={manualOrder.identifier ?? ""}
+                    onChange={(event) => {
+                      const value = event.currentTarget.value;
+                      setManualOrder((current) => ({ ...current, identifier: value }));
+                    }}
+                  />
+                </label>
+                <label>
+                  time_in_force
+                  <select
+                    value={manualOrder.time_in_force ?? ""}
+                    onChange={(event) => {
+                      const value = event.currentTarget.value;
+                      setManualOrder((current) => ({ ...current, time_in_force: value }));
+                    }}
+                  >
+                    <option value="">없음</option>
+                    <option value="ioc">ioc</option>
+                    <option value="fok">fok</option>
+                    <option value="post_only">post_only</option>
+                  </select>
+                </label>
+              </div>
+            </details>
+
+            <div className="manual-order-footnote">
+              <span>최소주문금액: {orderChanceConstraints.minTotalKrw ? formatTradeValue(orderChanceConstraints.minTotalKrw) : "1,000 KRW"}</span>
+              <span>
+                수수료:{" "}
+                {orderChanceConstraints.bidFeeRate || orderChanceConstraints.askFeeRate
+                  ? `${formatRate((manualOrder.side === "bid" ? orderChanceConstraints.bidFeeRate : orderChanceConstraints.askFeeRate) ?? 0)}`
+                  : "0.05%"}
+              </span>
+            </div>
+
+            <div className={`manual-order-check ${manualOrderValidation.isValid ? "ready" : "blocked"}`}>
+              <div>
+                <strong>{manualOrderValidation.title}</strong>
+                <span>{manualOrderValidation.summary}</span>
+              </div>
+              <em>{manualAssistSummary}</em>
+              {manualOrderValidation.errors.length > 0 ? (
+                <ul>
+                  {manualOrderValidation.errors.map((message) => (
+                    <li key={message}>{message}</li>
+                  ))}
+                </ul>
+              ) : null}
+              {manualOrderValidation.warnings.length > 0 ? (
+                <ul className="warning-list">
+                  {manualOrderValidation.warnings.map((message) => (
+                    <li key={message}>{message}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+
+            <div className="manual-order-actions">
+              <button className="secondary-button" type="button" disabled={accountLinked}>
+                {accountLinked ? "계좌 연동됨" : "계좌 연동 필요"}
+              </button>
+              <button className="primary-button" type="button" disabled={!canSubmitManualOrder} onClick={handleManualOrder}>
+                <Send size={17} />
+                {dryRun ? "모의 주문" : "주문 전송"}
+              </button>
+            </div>
           </div>
         </article>
+            </section>
+          </div>
+        ) : null}
+
       </section>
+      </section>
+      </>
+      ) : null}
 
-      <section className="bottom-grid">
-        <article className="panel output-panel">
-          <div className="panel-title">
-            <BarChart3 size={18} />
-            <h2>최근 응답</h2>
-          </div>
-          <div className="output-tabs">
-            <pre>
-              {compactJson({
-                ticker,
-                orderbook: selectedOrderbook,
-                tickStrategyStatus,
-                strategyPosition,
-                tickStrategyStats,
-                orderChanceConstraints,
-                accounts,
-                chance,
-                lastOrder,
-              })}
-            </pre>
-          </div>
-        </article>
-
-        <article className="panel log-panel">
-          <div className="panel-title">
-            <Activity size={18} />
-            <h2>로그</h2>
-          </div>
-          <div className="logs">
-            {logs.length === 0 ? (
-              <span className="empty">아직 로그가 없습니다.</span>
-            ) : (
-              logs.map((log) => (
-                <div className={`log-line ${log.level}`} key={log.id}>
-                  <time>{log.at}</time>
-                  <span>{log.message}</span>
+      {activeToolModal === "debug" ? (
+        <div className="tool-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && closeToolModal()}>
+          <section className="tool-modal-panel debug-modal" role="dialog" aria-modal="true" aria-labelledby="debug-modal-title">
+            <div className="tool-modal-header">
+              <h2 id="debug-modal-title">로그</h2>
+              <button className="icon-button modal-close-button" type="button" aria-label="닫기" onClick={closeToolModal}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="bottom-grid modal-content-panel">
+              <article className="panel output-panel">
+                <div className="panel-title">
+                  <BarChart3 size={18} />
+                  <h2>최근 응답</h2>
                 </div>
-              ))
-            )}
-          </div>
-        </article>
-      </section>
+                <div className="output-tabs">
+                  <pre>
+                    {compactJson({
+                      ticker,
+                      orderbook: selectedOrderbook,
+                      tickStrategyStatus,
+                      strategyPosition,
+                      tickStrategyStats,
+                      orderChanceConstraints,
+                      accounts,
+                      chance,
+                      lastOrder,
+                    })}
+                  </pre>
+                </div>
+              </article>
+
+              <article className="panel log-panel">
+                <div className="panel-title">
+                  <Activity size={18} />
+                  <h2>로그</h2>
+                </div>
+                <div className="logs">
+                  {logs.length === 0 ? (
+                    <span className="empty">아직 로그가 없습니다.</span>
+                  ) : (
+                    logs.map((log) => (
+                      <div className={`log-line ${log.level}`} key={log.id}>
+                        <time>{log.at}</time>
+                        <span>{log.message}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </article>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }

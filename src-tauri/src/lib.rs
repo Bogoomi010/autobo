@@ -63,7 +63,7 @@ struct UpbitTradeMessage {
     ask_bid: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct UpbitOrderbookUnit {
     ask_price: f64,
     bid_price: f64,
@@ -94,6 +94,7 @@ struct OrderbookSnapshot {
     total_bid_size: f64,
     spread: f64,
     spread_rate: f64,
+    orderbook_units: Vec<UpbitOrderbookUnit>,
     received_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     exchange_timestamp: Option<i64>,
@@ -101,7 +102,7 @@ struct OrderbookSnapshot {
 
 impl OrderbookSnapshot {
     fn from_message(message: UpbitOrderbookMessage) -> Option<Self> {
-        let best_unit = message.orderbook_units.first()?;
+        let best_unit = message.orderbook_units.first()?.clone();
         let mid_price = (best_unit.ask_price + best_unit.bid_price) / 2.0;
         let spread = best_unit.ask_price - best_unit.bid_price;
         let spread_rate = if mid_price > 0.0 {
@@ -120,6 +121,7 @@ impl OrderbookSnapshot {
             total_bid_size: message.total_bid_size,
             spread,
             spread_rate,
+            orderbook_units: message.orderbook_units,
             received_at: unix_timestamp_millis(),
             exchange_timestamp: message.timestamp,
         })
