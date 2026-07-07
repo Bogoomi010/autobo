@@ -1,3 +1,5 @@
+use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
+use aes_gcm::{Aes256Gcm, Nonce};
 use futures_util::{SinkExt, StreamExt};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::Client;
@@ -31,7 +33,7 @@ struct JwtClaims {
     query_hash_alg: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApiKeys {
     access_key: String,
     secret_key: String,
@@ -299,6 +301,98 @@ fn load_upbitkey() -> Result<ApiKeys, String> {
         .map_err(|error| format!("upbitkey 파일을 읽을 수 없습니다: {error}"))?;
 
     parse_upbitkey_contents(&contents)
+}
+
+// ---------- API Key 암호화 저장 (ROOT/upbitkey.enc) ----------
+
+const KEY_FILE_MAGIC: &[u8] = b"AUTOBOKEY1";
+const NONCE_LEN: usize = 12;
+
+fn encrypted_key_path() -> Result<PathBuf, String> {
+    Ok(upbitkey_path()?.with_file_name("upbitkey.enc"))
+}
+
+/// 머신 종속 암호화 키 유도 — upbitkey.enc를 다른 PC로 복사해도 복호화되지 않는다.
+fn encryption_key() -> [u8; 32] {
+    let computer = std::env::var("COMPUTERNAME").unwrap_or_default();
+    let user = std::env::var("USERNAME").unwrap_or_default();
+
+    let mut hasher = Sha512::new();
+    hasher.update(b"autobo-upbitkey-v1");
+    hasher.update(computer.as_bytes());
+    hasher.update(user.as_bytes());
+    let digest = hasher.finalize();
+
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&digest[..32]);
+    key
+}
+
+fn encrypt_keys(keys: &ApiKeys, encryption_key: &[u8; 32]) -> Result<Vec<u8>, String> {
+    let plaintext =
+        serde_json::to_vec(keys).map_err(|error| format!("API Key 직렬화 실패: {error}"))?;
+
+    let cipher = Aes256Gcm::new_from_slice(encryption_key)
+        .map_err(|_| "API Key 암호화 키 생성에 실패했습니다.".to_string())?;
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext.as_slice())
+        .map_err(|_| "API Key 암호화에 실패했습니다.".to_string())?;
+
+    let mut contents = Vec::with_capacity(KEY_FILE_MAGIC.len() + NONCE_LEN + ciphertext.len());
+    contents.extend_from_slice(KEY_FILE_MAGIC);
+    contents.extend_from_slice(&nonce);
+    contents.extend_from_slice(&ciphertext);
+    Ok(contents)
+}
+
+fn decrypt_keys(contents: &[u8], encryption_key: &[u8; 32]) -> Result<ApiKeys, String> {
+    let payload = contents
+        .strip_prefix(KEY_FILE_MAGIC)
+        .ok_or_else(|| "upbitkey.enc 파일 형식이 올바르지 않습니다.".to_string())?;
+    if payload.len() <= NONCE_LEN {
+        return Err("upbitkey.enc 파일이 손상되었습니다.".to_string());
+    }
+
+    let (nonce, ciphertext) = payload.split_at(NONCE_LEN);
+    let cipher = Aes256Gcm::new_from_slice(encryption_key)
+        .map_err(|_| "API Key 암호화 키 생성에 실패했습니다.".to_string())?;
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .map_err(|_| {
+            "API Key 복호화에 실패했습니다. 키를 다시 입력하세요. (다른 PC에서 만든 파일은 사용할 수 없습니다)"
+                .to_string()
+        })?;
+
+    serde_json::from_slice::<ApiKeys>(&plaintext)
+        .map_err(|_| "upbitkey.enc 내용이 올바르지 않습니다. 키를 다시 입력하세요.".to_string())
+}
+
+fn save_encrypted_keys(keys: &ApiKeys) -> Result<(), String> {
+    let contents = encrypt_keys(keys, &encryption_key())?;
+    fs::write(encrypted_key_path()?, contents)
+        .map_err(|error| format!("API Key 파일 저장 실패: {error}"))
+}
+
+/// 저장된 키 로드 — 암호화 파일 우선, 없으면 기존 평문 upbitkey를 암호화 파일로 이전.
+fn load_saved_keys() -> Result<ApiKeys, String> {
+    let encrypted_path = encrypted_key_path()?;
+    if encrypted_path.exists() {
+        let contents = fs::read(&encrypted_path)
+            .map_err(|error| format!("upbitkey.enc 파일을 읽을 수 없습니다: {error}"))?;
+        return decrypt_keys(&contents, &encryption_key());
+    }
+
+    let legacy_path = upbitkey_path()?;
+    if legacy_path.exists() {
+        let keys = load_upbitkey()?;
+        // 평문 키를 남기지 않는다 — 암호화 저장 성공 후에만 원본 제거
+        save_encrypted_keys(&keys)?;
+        let _ = fs::remove_file(&legacy_path);
+        return Ok(keys);
+    }
+
+    Err("저장된 API Key가 없습니다. Access Key와 Secret Key를 입력하세요.".to_string())
 }
 
 fn order_query_string(order: &OrderRequest) -> String {
@@ -788,10 +882,44 @@ async fn fetch_accounts(keys: &ApiKeys) -> Result<Value, String> {
 }
 
 #[tauri::command]
+fn has_saved_keys() -> bool {
+    encrypted_key_path()
+        .map(|path| path.exists())
+        .unwrap_or(false)
+        || upbitkey_path().map(|path| path.exists()).unwrap_or(false)
+}
+
+#[tauri::command]
+async fn save_api_keys(
+    access_key: String,
+    secret_key: String,
+    session_keys: tauri::State<'_, SessionApiKeys>,
+) -> Result<Value, String> {
+    let keys = ApiKeys {
+        access_key: access_key.trim().to_string(),
+        secret_key: secret_key.trim().to_string(),
+    };
+    if keys.access_key.is_empty() || keys.secret_key.is_empty() {
+        return Err("Access Key와 Secret Key를 모두 입력하세요.".to_string());
+    }
+
+    // 잔고 조회로 키 유효성을 먼저 검증 — 잘못된 키는 저장하지 않는다
+    let accounts = fetch_accounts(&keys).await?;
+    save_encrypted_keys(&keys)?;
+
+    let mut guard = session_keys
+        .lock()
+        .map_err(|_| "API Key 상태를 사용할 수 없습니다.".to_string())?;
+    *guard = Some(keys);
+
+    Ok(accounts)
+}
+
+#[tauri::command]
 async fn connect_upbitkey_account(
     session_keys: tauri::State<'_, SessionApiKeys>,
 ) -> Result<Value, String> {
-    let keys = load_upbitkey()?;
+    let keys = load_saved_keys()?;
     let accounts = fetch_accounts(&keys).await?;
 
     let mut guard = session_keys
@@ -854,6 +982,48 @@ async fn get_order_chance(
 }
 
 #[tauri::command]
+async fn get_order(
+    uuid: String,
+    session_keys: tauri::State<'_, SessionApiKeys>,
+) -> Result<Value, String> {
+    let uuid = uuid.trim().to_string();
+    if uuid.is_empty() {
+        return Err("조회할 주문 uuid를 입력하세요.".to_string());
+    }
+
+    if !uuid
+        .chars()
+        .all(|character| character.is_ascii_hexdigit() || character == '-')
+    {
+        return Err("주문 uuid 형식이 올바르지 않습니다.".to_string());
+    }
+
+    let keys = {
+        let guard = session_keys
+            .lock()
+            .map_err(|_| "API Key 상태를 사용할 수 없습니다.".to_string())?;
+        guard
+            .clone()
+            .ok_or_else(|| "API Key를 먼저 연동하세요.".to_string())?
+    };
+
+    let query_string = format!("uuid={uuid}");
+    let authorization = auth_header(&keys, Some(&query_string))?;
+
+    Client::new()
+        .get(format!("{UPBIT_BASE_URL}/v1/order?{query_string}"))
+        .header("Authorization", authorization)
+        .send()
+        .await
+        .map_err(|error| format!("주문 조회 요청 실패: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("주문 조회 응답 오류: {error}"))?
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("주문 조회 파싱 실패: {error}"))
+}
+
+#[tauri::command]
 async fn place_order(
     order: OrderRequest,
     dry_run: bool,
@@ -912,9 +1082,12 @@ pub fn run() {
             stop_trade_volume_stream,
             start_orderbook_stream,
             stop_orderbook_stream,
+            has_saved_keys,
+            save_api_keys,
             connect_upbitkey_account,
             get_session_accounts,
             get_order_chance,
+            get_order,
             place_order
         ])
         .run(tauri::generate_context!())
@@ -945,5 +1118,36 @@ mod tests {
             .expect_err("missing secret key should fail");
 
         assert!(error.contains("Secret key"));
+    }
+
+    #[test]
+    fn encrypt_decrypt_roundtrip() {
+        let keys = ApiKeys {
+            access_key: "test-access-key".to_string(),
+            secret_key: "test-secret-key".to_string(),
+        };
+        let encryption_key = [7u8; 32];
+
+        let contents = encrypt_keys(&keys, &encryption_key).expect("encrypt should succeed");
+        assert!(contents.starts_with(KEY_FILE_MAGIC));
+        // 평문 키가 파일 내용에 그대로 남지 않아야 한다
+        assert!(!contents
+            .windows(keys.access_key.len())
+            .any(|window| window == keys.access_key.as_bytes()));
+
+        let decrypted = decrypt_keys(&contents, &encryption_key).expect("decrypt should succeed");
+        assert_eq!(decrypted.access_key, keys.access_key);
+        assert_eq!(decrypted.secret_key, keys.secret_key);
+    }
+
+    #[test]
+    fn rejects_decrypt_with_wrong_key() {
+        let keys = ApiKeys {
+            access_key: "test-access-key".to_string(),
+            secret_key: "test-secret-key".to_string(),
+        };
+
+        let contents = encrypt_keys(&keys, &[7u8; 32]).expect("encrypt should succeed");
+        decrypt_keys(&contents, &[8u8; 32]).expect_err("wrong key should fail");
     }
 }

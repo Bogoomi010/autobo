@@ -1,28 +1,53 @@
-# Autobo
+# 🏢 코인 오피스 (Autobo)
 
-Tauri 기반 Upbit 자동 트레이딩 데스크톱 앱입니다. 현재 구현은 MVP이며 기본값은 주문 모의 실행입니다.
+일본 도트 감성 타이쿤 게임으로 재탄생한 Autobo. 탑다운 사무실에서 캐릭터를 조작해
+**실제 업비트 계좌로 코인을 매매**한다.
 
-## 기능
+- **데스크톱 앱(Tauri) = ⚠ 실거래 모드** — 게임 조작이 곧 실제 시장가 매수/매도다.
+- **브라우저(dev) = 🧪 모의 모드** — 가상 잔고 100만원 + 실시세. UI/게임 개발용.
 
-- Upbit `KRW-*` 마켓 현재가 조회
-- API Key 기반 잔고 조회 및 주문 가능정보 조회
-- 지정가, 시장가 매수, 시장가 매도 수동 주문
-- 가격 조건 기반 자동 감시
-- 체결/호가 기반 틱 신호 자동 전략 dry-run 검증
-- 주문 모의 실행 기본 활성화
-- API Key 파일 저장 없음
+기술 스택: TypeScript + Vite + Phaser 3 + Tauri 2 (Rust 업비트 클라이언트)
+
+기획서: [docs/COIN_OFFICE_GDD.md](docs/COIN_OFFICE_GDD.md) ·
+API 규칙: [docs/upbit-api-implementation-notes.md](docs/upbit-api-implementation-notes.md)
+
+## 플레이 방법
+
+1. **금고방**(좌측)에서 Space → 머리 위 셀렉터로 만원 단위 출금 (←→ ±1만 / ↑↓ ±10만)
+2. 돈뭉치를 양손에 들고 **투자방**(우측) 코인 단말기에서 Space → 코인 시세판 모달
+3. 코인 선택 → 확인 화면 → 들고 있는 금액 전액 **시장가 매수** (실거래 모드는 실제 주문!)
+4. 평균 체결가 대비 **+3% 자동 익절 / -3% 자동 손절** (실제 시장가 매도) → 정산기가 체결액만큼 돈뭉치 배출
+5. 배출된 돈을 주워(Space) 금고에 재입금
+
+| 키 | 동작 |
+| --- | --- |
+| WASD / 방향키 | 이동 |
+| Space | 상호작용 (금고·단말기·돈뭉치) |
+| ESC | 셀렉터/모달 취소 (주문 전송 중엔 잠금) |
+
+이 게임은 **게임에서 매수한 포지션만** 자동 매도한다. 계좌에 원래 있던 코인은 건드리지 않는다.
 
 ## 실행
 
 ```powershell
 npm install
-npm run tauri dev
+npm run tauri dev   # ⚠ 실거래 모드
 ```
 
-웹 UI만 확인하려면 다음 명령을 사용할 수 있습니다. 브라우저에서는 Tauri Rust 명령이 없으므로 API 호출 기능은 데스크톱 앱에서 확인해야 합니다.
+실거래 모드는 실행 파일 옆 `upbitkey` 파일이 필요하다 (`tauri dev` 기준
+`src-tauri/target/debug/upbitkey`). 형식:
+
+```
+access key
+{액세스 키}
+secret key
+{시크릿 키}
+```
+
+브라우저 모의 모드 (실계좌 미사용):
 
 ```powershell
-npm run dev
+npm run dev   # http://localhost:1420
 ```
 
 ## 빌드 검증
@@ -31,20 +56,10 @@ npm run dev
 npm run tauri build
 ```
 
-## Upbit API 사용 범위
-
-- 시세 조회: `GET /v1/ticker?markets=KRW-BTC`
-- KRW 마켓 현재가 목록: `GET /v1/ticker/all?quote_currencies=KRW`
-- KRW 마켓 실시간 체결량: `wss://api.upbit.com/websocket/v1`의 `trade` 구독
-- 선택 마켓 실시간 호가: `wss://api.upbit.com/websocket/v1`의 `orderbook` 구독
-- 잔고 조회: `GET /v1/accounts`
-- 주문 가능정보: `GET /v1/orders/chance?market=KRW-BTC`
-- 주문 생성: `POST /v1/orders`
-- 인증: JWT `HS512`, `access_key`, `nonce`, 요청 파라미터 또는 본문이 있을 때 `query_hash` 및 `query_hash_alg=SHA512`
-
 ## 실거래 전 확인
 
-- Upbit API Key에 필요한 권한만 부여했는지 확인합니다.
-- 허용 IP가 현재 실행 환경과 일치하는지 확인합니다.
-- 모의 실행으로 주문 본문과 조건 트리거를 먼저 검증합니다.
-- 틱 신호 전략은 현재 dry-run 전용이며, 실거래 연결 전 주문 상태 추적과 미체결 취소 흐름을 별도로 검증해야 합니다.
+- Upbit API Key에 필요한 권한(자산조회·주문조회·주문하기)만 부여했는지 확인한다.
+- 허용 IP가 현재 실행 환경과 일치하는지 확인한다.
+- 게임 상단의 "⚠ 실거래" 뱃지와 계좌 연동 상태를 확인한 뒤 플레이한다.
+- 시장가 주문은 호가 상황에 따라 표시 가격과 체결가가 다를 수 있다 (슬리피지).
+- 업비트 최소 주문 금액은 5,000원 — 게임 출금 단위(1만원)는 이를 충족한다.

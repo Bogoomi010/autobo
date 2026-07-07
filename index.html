@@ -1,14 +1,730 @@
 <!doctype html>
-<html lang="en">
+<html lang="ko">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri + React + Typescript</title>
-  </head>
+    <title>코인 오피스</title>
+    <style>
+      /* 픽셀 폰트 (CDN) — 실패 시 Malgun Gothic 폴백. 오프라인에서도 안 깨짐 */
+      @import url("https://cdn.jsdelivr.net/npm/galmuri@latest/dist/galmuri.css");
 
+      :root {
+        /* 일본 레트로 도트 상점 팔레트 */
+        --cream: #f7ecd4;
+        --cream-2: #efe0c0;
+        --ink: #3d2a1a; /* 다크 브라운 테두리/글자 */
+        --wood: #8a5a33;
+        --mint: #2fbf9b;
+        --coral: #f26d5b;
+        --gold: #f2b135;
+        /* 한국 거래소 관례: 상승=빨강 / 하락=파랑 */
+        --up: #e5484d;
+        --down: #3b82f6;
+        --font: "Galmuri11", "Malgun Gothic", sans-serif;
+        --shadow: 0 4px 0 var(--ink);
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #1a1410;
+        font-family: var(--font);
+        color: var(--ink);
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      #wrap {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 1280px;
+        height: 720px;
+        transform-origin: top left;
+      }
+      #app canvas {
+        display: block;
+        image-rendering: pixelated;
+      }
+      #ui {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        font-family: var(--font);
+      }
+
+      /* 공용 픽셀 패널/버튼 ------------------------------------------------ */
+      .pixel-panel {
+        background: var(--cream);
+        border: 4px solid var(--ink);
+        box-shadow: var(--shadow);
+        border-radius: 2px;
+      }
+      .pixel-btn {
+        font-family: var(--font);
+        font-size: 15px;
+        color: var(--cream);
+        background: var(--mint);
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        box-shadow: 0 4px 0 var(--ink);
+        padding: 10px 16px;
+        cursor: pointer;
+        transition: transform 0.06s, box-shadow 0.06s;
+      }
+      .pixel-btn:hover {
+        transform: translateY(2px);
+        box-shadow: 0 2px 0 var(--ink);
+      }
+      .pixel-btn:active {
+        transform: translateY(4px);
+        box-shadow: 0 0 0 var(--ink);
+      }
+      .pixel-btn.coral {
+        background: var(--coral);
+      }
+      .pixel-btn.wood {
+        background: var(--wood);
+      }
+      .pixel-btn:disabled {
+        background: #b9ac93;
+        cursor: default;
+        transform: none;
+        box-shadow: 0 4px 0 #7a6f5c;
+      }
+      .num {
+        font-variant-numeric: tabular-nums;
+      }
+      .up {
+        color: var(--up);
+      }
+      .down {
+        color: var(--down);
+      }
+
+      /* 상단 바 ----------------------------------------------------------- */
+      #topbar {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 56px;
+        pointer-events: auto; /* #ui가 none — 재연동/키 설정 버튼 클릭용 */
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 14px;
+        box-sizing: border-box;
+        background: var(--cream);
+        border-bottom: 4px solid var(--ink);
+        box-shadow: 0 3px 0 rgba(61, 42, 26, 0.35);
+      }
+      #topbar .stat {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 6px 12px;
+        background: var(--cream-2);
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        font-size: 14px;
+      }
+      #topbar .stat .lbl {
+        font-size: 12px;
+        color: var(--wood);
+      }
+      #topbar .stat b {
+        font-size: 15px;
+        color: var(--ink);
+      }
+      #topbar .stat.carry.empty b {
+        color: #b0a488;
+      }
+      #topbar .stat.total b {
+        color: var(--gold);
+        -webkit-text-stroke: 0.5px var(--ink);
+      }
+      #topbar .spacer {
+        flex: 1;
+      }
+      #topbar .api {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        background: var(--cream-2);
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        font-size: 12px;
+      }
+      #topbar .lamp {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        border: 2px solid var(--ink);
+        background: #e5484d;
+        box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.5);
+      }
+      #topbar .lamp.on {
+        background: var(--mint);
+        animation: lamp-pulse 1.4s ease-in-out infinite;
+      }
+      #topbar .lamp.off {
+        background: var(--up);
+        animation: lamp-blink 0.8s step-end infinite;
+      }
+      @keyframes lamp-pulse {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(47, 191, 155, 0.6); }
+        50% { box-shadow: 0 0 0 4px rgba(47, 191, 155, 0); }
+      }
+      @keyframes lamp-blink {
+        0%, 50% { opacity: 1; }
+        51%, 100% { opacity: 0.25; }
+      }
+
+      /* 모드 뱃지 (실거래/모의) ------------------------------------------- */
+      #topbar .mode-badge {
+        display: flex;
+        align-items: center;
+        font-size: 13px;
+        font-weight: 700;
+        padding: 6px 12px;
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        white-space: nowrap;
+      }
+      #topbar .mode-badge.real {
+        color: var(--cream);
+        background: var(--up);
+        box-shadow: 0 0 0 2px var(--gold) inset;
+        animation: real-pulse 1.6s ease-in-out infinite;
+      }
+      #topbar .mode-badge.sim {
+        color: var(--ink);
+        background: var(--mint);
+      }
+      @keyframes real-pulse {
+        0%, 100% { box-shadow: 0 0 0 2px var(--gold) inset; }
+        50% { box-shadow: 0 0 0 2px var(--gold) inset, 0 0 0 3px rgba(242, 177, 53, 0.7); }
+      }
+
+      /* 계좌 연동 상태 + 재연동 버튼 ------------------------------------- */
+      #topbar .connect {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        background: var(--cream-2);
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        font-size: 12px;
+      }
+      #topbar .connect::before {
+        content: "●";
+        font-size: 11px;
+        color: var(--gold);
+      }
+      #topbar .connect.connecting::before { color: var(--gold); }
+      #topbar .connect.connecting { color: var(--wood); }
+      #topbar .connect.connected::before { color: var(--mint); }
+      #topbar .connect.error::before { color: var(--up); }
+      #topbar .connect.error { color: var(--up); }
+      .pixel-btn.tiny {
+        font-size: 11px;
+        padding: 3px 8px;
+        box-shadow: 0 3px 0 var(--ink);
+      }
+      .pixel-btn.tiny:hover { box-shadow: 0 1px 0 var(--ink); }
+      .pixel-btn.tiny.reconnect {
+        background: var(--coral);
+        display: none;
+      }
+      .pixel-btn.tiny.keybtn {
+        background: var(--wood);
+        padding: 3px 6px;
+      }
+
+      /* 주문 처리 중 인디케이터 ------------------------------------------ */
+      #topbar .order-busy {
+        display: none;
+        align-items: center;
+        font-size: 12px;
+        color: var(--ink);
+        background: var(--gold);
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        padding: 6px 12px;
+        animation: busy-blink 1s ease-in-out infinite;
+      }
+      #topbar .order-busy.on { display: flex; }
+      @keyframes busy-blink {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.55; }
+      }
+
+      /* 우측 포지션 패널 --------------------------------------------------- */
+      #positions {
+        position: absolute;
+        right: 14px;
+        top: 68px;
+        bottom: 14px;
+        width: 300px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        pointer-events: auto;
+      }
+      .panel-head {
+        font-size: 14px;
+        color: var(--ink);
+        background: var(--gold);
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        padding: 7px 12px;
+        box-shadow: var(--shadow);
+      }
+      #posList {
+        flex: 1;
+        min-height: 60px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 2px;
+      }
+      #posList .empty {
+        margin: auto;
+        text-align: center;
+        color: var(--wood);
+        font-size: 13px;
+        line-height: 1.7;
+        opacity: 0.85;
+      }
+      .pos-card {
+        background: var(--cream);
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        box-shadow: 0 3px 0 var(--ink);
+        padding: 9px 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .pos-top {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .badge {
+        flex: none;
+        width: 34px;
+        height: 34px;
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 13px;
+        color: var(--ink);
+        font-weight: 700;
+      }
+      .pos-name {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        line-height: 1.2;
+      }
+      .pos-name .ko {
+        font-size: 14px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .pos-name .amt {
+        font-size: 11px;
+        color: var(--wood);
+      }
+      .pos-pnl {
+        text-align: right;
+        font-size: 16px;
+      }
+      .pos-gauge {
+        position: relative;
+        height: 12px;
+        background: var(--cream-2);
+        border: 2px solid var(--ink);
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      .pos-gauge .mid {
+        position: absolute;
+        left: 50%;
+        top: 0;
+        bottom: 0;
+        width: 2px;
+        background: var(--ink);
+        opacity: 0.35;
+      }
+      .pos-gauge .fill {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 50%;
+        width: 0;
+        background: var(--mint);
+      }
+      .pos-gauge .fill.up { background: var(--up); }
+      .pos-gauge .fill.down { background: var(--down); }
+
+      /* 매도 주문 진행 중 카드 (살짝 흐리게) */
+      .pos-card.selling {
+        opacity: 0.6;
+        filter: grayscale(0.3);
+      }
+      .pos-pnl.selling-label {
+        font-size: 12px;
+        color: var(--wood);
+        animation: busy-blink 1s ease-in-out infinite;
+      }
+
+      /* 거래 로그 --------------------------------------------------------- */
+      #tradeLog {
+        flex: none;
+        max-height: 168px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        background: var(--cream);
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        box-shadow: var(--shadow);
+        padding: 9px 10px;
+      }
+      #tradeLog .tl-head {
+        font-size: 12px;
+        color: var(--wood);
+      }
+      #tradeLog .tl-row {
+        font-size: 12px;
+        line-height: 1.45;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #tradeLog .tl-empty {
+        font-size: 12px;
+        color: #b0a488;
+      }
+
+      /* 토스트 ------------------------------------------------------------ */
+      #toasts {
+        position: absolute;
+        top: 66px;
+        left: 0;
+        right: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        pointer-events: none;
+        z-index: 60;
+      }
+      .toast {
+        background: var(--cream);
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        box-shadow: var(--shadow);
+        padding: 9px 18px;
+        font-size: 14px;
+        color: var(--ink);
+        animation: toast-in 0.18s ease-out;
+        position: relative;
+      }
+      .toast::after {
+        /* 말풍선 꼬리 */
+        content: "";
+        position: absolute;
+        left: 50%;
+        bottom: -9px;
+        transform: translateX(-50%);
+        width: 10px;
+        height: 10px;
+        background: var(--cream);
+        border-right: 3px solid var(--ink);
+        border-bottom: 3px solid var(--ink);
+        rotate: 45deg;
+      }
+      .toast.good { background: #eafaf3; border-color: var(--mint); }
+      .toast.good::after { background: #eafaf3; border-color: var(--mint); }
+      .toast.bad { background: #fdeeee; border-color: var(--up); }
+      .toast.bad::after { background: #fdeeee; border-color: var(--up); }
+      .toast.out { animation: toast-out 0.3s ease-in forwards; }
+      @keyframes toast-in {
+        from { transform: translateY(-10px); opacity: 0; }
+        to { transform: translateY(0); opacity: 1; }
+      }
+      @keyframes toast-out {
+        to { transform: translateY(-8px); opacity: 0; }
+      }
+
+      /* 코인 목록 모달 ---------------------------------------------------- */
+      #coinModal {
+        position: absolute;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(26, 20, 16, 0.62);
+        pointer-events: auto;
+        z-index: 80;
+      }
+      #coinModal.open { display: flex; }
+      #coinModal .cm-panel {
+        width: 560px;
+        max-height: 86%;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 18px 20px;
+      }
+      #coinModal .cm-head {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      #coinModal .cm-title {
+        font-size: 19px;
+        color: var(--ink);
+      }
+      #coinModal .cm-carry {
+        margin-left: auto;
+        font-size: 13px;
+        background: var(--cream-2);
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        padding: 6px 10px;
+      }
+      #coinModal .cm-carry b { color: var(--wood); }
+      #cmSearch {
+        font-family: var(--font);
+        font-size: 14px;
+        color: var(--ink);
+        background: #fff;
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        padding: 9px 11px;
+        outline: none;
+      }
+      #cmSearch::placeholder { color: #b0a488; }
+      #cmList {
+        flex: 1;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-height: 120px;
+      }
+      #cmList .cm-loading {
+        margin: auto;
+        color: var(--wood);
+        font-size: 14px;
+      }
+      .cm-row {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        padding: 8px 10px;
+        background: var(--cream);
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        box-shadow: 0 3px 0 var(--ink);
+        cursor: pointer;
+        text-align: left;
+        transition: transform 0.06s, box-shadow 0.06s;
+      }
+      .cm-row:hover {
+        transform: translateY(2px);
+        box-shadow: 0 1px 0 var(--ink);
+      }
+      .cm-row .cm-name {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        line-height: 1.25;
+      }
+      .cm-row .cm-name .ko {
+        font-size: 14px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .cm-row .cm-name .sym {
+        font-size: 11px;
+        color: var(--wood);
+      }
+      .cm-row .cm-price {
+        text-align: right;
+        display: flex;
+        flex-direction: column;
+        line-height: 1.25;
+      }
+      .cm-row .cm-price .p {
+        font-size: 14px;
+      }
+      .cm-row .cm-price .pc {
+        font-size: 12px;
+      }
+
+      /* API Key 입력 모달 -------------------------------------------------- */
+      #keyModal {
+        position: absolute;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(26, 20, 16, 0.62);
+        pointer-events: auto;
+        z-index: 90; /* 코인 모달(80)보다 위 */
+      }
+      #keyModal.open { display: flex; }
+      #keyModal .km-panel {
+        width: 520px;
+        display: flex;
+        flex-direction: column;
+        gap: 13px;
+        padding: 20px 22px;
+      }
+      #keyModal .km-title {
+        font-size: 19px;
+        color: var(--ink);
+      }
+      #keyModal .km-desc {
+        font-size: 12px;
+        color: var(--wood);
+        line-height: 1.6;
+      }
+      #keyModal label {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 13px;
+        color: var(--ink);
+      }
+      #keyModal input {
+        font-family: var(--font);
+        font-size: 13px;
+        color: var(--ink);
+        background: #fff;
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        padding: 9px 11px;
+        outline: none;
+      }
+      #keyModal input::placeholder { color: #b0a488; }
+      #keyModal input:focus { border-color: var(--mint); }
+      #keyModal .km-error {
+        display: none;
+        font-size: 12px;
+        color: var(--up);
+        background: #fdeeee;
+        border: 3px solid var(--up);
+        border-radius: 2px;
+        padding: 8px 10px;
+        line-height: 1.5;
+        word-break: break-all;
+      }
+      #keyModal .km-error.on { display: block; }
+      #keyModal .km-note {
+        font-size: 11px;
+        color: var(--wood);
+        line-height: 1.6;
+      }
+      #keyModal .km-actions {
+        display: flex;
+        gap: 10px;
+        margin-top: 2px;
+      }
+      #keyModal .km-actions .pixel-btn { flex: 1; }
+
+      /* 투자 확인 화면 ---------------------------------------------------- */
+      #cmConfirm {
+        display: none;
+        flex-direction: column;
+        gap: 12px;
+      }
+      #coinModal.confirm #cmList,
+      #coinModal.confirm #cmSearch { display: none; }
+      #coinModal.confirm #cmConfirm { display: flex; }
+      .cf-hero {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px;
+        background: var(--cream-2);
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+      }
+      .cf-hero .badge { width: 44px; height: 44px; font-size: 15px; }
+      .cf-hero .cf-h-name { font-size: 17px; }
+      .cf-hero .cf-h-sym { font-size: 12px; color: var(--wood); }
+      .cf-rows {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .cf-line {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 14px;
+        padding: 8px 12px;
+        background: var(--cream);
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+      }
+      .cf-line .k { color: var(--wood); }
+      .cf-target {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 10px 12px;
+        background: #fff;
+        border: 3px dashed var(--ink);
+        border-radius: 2px;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      /* 실거래 모드 경고 (실제 계좌 매수) */
+      .cf-warn {
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--cream);
+        background: var(--up);
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        padding: 8px 12px;
+        text-align: center;
+        box-shadow: 0 0 0 2px var(--gold) inset;
+      }
+      .cf-actions {
+        display: flex;
+        gap: 10px;
+        margin-top: 2px;
+      }
+      .cf-actions .pixel-btn { flex: 1; }
+    </style>
+  </head>
   <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <div id="wrap">
+      <div id="app"></div>
+      <div id="ui"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

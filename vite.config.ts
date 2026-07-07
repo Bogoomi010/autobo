@@ -1,13 +1,10 @@
 import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  plugins: [react()],
-
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors
@@ -27,6 +24,15 @@ export default defineConfig(async () => ({
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
+    },
+    // 브라우저 개발(모의 모드) 전용 — Quotation API CORS 회피 프록시.
+    // 실거래(Exchange)는 Tauri Rust 커맨드로만 호출한다 (docs/upbit-api-implementation-notes.md)
+    proxy: {
+      "/upbit-api": {
+        target: "https://api.upbit.com",
+        changeOrigin: true,
+        rewrite: (path: string) => path.replace(/^\/upbit-api/, ""),
+      },
     },
   },
 }));
