@@ -244,6 +244,33 @@ export function generateTextures(scene: Phaser.Scene): void {
     for (const [x, y, w, h, c] of bars) px(g, c, x, y, w, h);
   });
 
+  // ── 트레이딩 시세판 (벽걸이 대형 보드, native 96×60) ──
+  // 거실 중앙 상단. 돈 없이도 코인 목록을 훑어보는 상호작용 오브젝트.
+  tex(scene, "board", 96, 60, (g) => {
+    px(g, DARK, 0, 0, 96, 60); // 외곽 프레임
+    px(g, 0x2b2f36, 3, 3, 90, 50); // 베젤
+    px(g, MINT, 3, 3, 90, 3); // 민트 상단 트림
+    px(g, 0x0f1620, 7, 9, 82, 42); // 스크린
+    // 헤더 바 + 타이틀 + LIVE 램프
+    px(g, 0x1d2836, 7, 9, 82, 7);
+    px(g, MINT, 11, 11, 26, 3); // "시세판" 타이틀
+    g.fillStyle(0x5fe0a0, 1);
+    g.fillCircle(82, 12, 2); // LIVE 램프
+    // 코인 행 4줄 (심볼칩 · 이름 · 가격 · 등락칩) — 업비트 관례 상승=빨강/하락=파랑
+    const rows: [number, number][] = [
+      [21, 0xe4553f],
+      [29, 0x4f83d6],
+      [37, 0xe4553f],
+      [45, 0xe4553f],
+    ];
+    for (const [y, chg] of rows) {
+      px(g, 0xf2c14e, 11, y, 4, 4); // 심볼 칩
+      px(g, 0x6b7178, 18, y, 26, 2); // 이름
+      px(g, 0x9aa4af, 52, y, 16, 2); // 가격
+      px(g, chg, 74, y, 11, 4); // 등락 칩
+    }
+  });
+
   // ── 정산기 (ATM, native 48×72) ─────────────────────
   tex(scene, "settle", 48, 72, (g) => {
     px(g, DARK, 2, 2, 44, 68);

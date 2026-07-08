@@ -1,5 +1,5 @@
 import Phaser from "phaser";
-import { GAME_H, GAME_W, MONEY_UNIT } from "../game/config";
+import { GAME_H, GAME_W } from "../game/config";
 import { bus, EV } from "../game/events";
 import { store } from "../game/state";
 import type { ClosedTrade, Payout } from "../game/types";
@@ -23,7 +23,7 @@ const DOOR_Y0 = 320;
 const DOOR_Y1 = 432;
 
 type Nearest =
-  | { type: "safe" | "terminal" | "money"; id?: string; ax: number; ay: number }
+  | { type: "safe" | "terminal" | "board" | "money"; id?: string; ax: number; ay: number }
   | null;
 
 /**
@@ -38,14 +38,13 @@ export class OfficeScene extends Phaser.Scene {
   private keyS!: Phaser.Input.Keyboard.Key;
   private keyD!: Phaser.Input.Keyboard.Key;
   private keySpace!: Phaser.Input.Keyboard.Key;
-  private keyEsc!: Phaser.Input.Keyboard.Key;
 
-  private mode: "play" | "selector" | "modal" = "play";
+  private mode: "play" | "modal" = "play";
   private facing: "down" | "up" | "side" = "down";
   private flip = false;
 
   private solids: Phaser.GameObjects.GameObject[] = [];
-  private interactables: { type: "safe" | "terminal"; ax: number; ay: number }[] = [];
+  private interactables: { type: "safe" | "terminal" | "board"; ax: number; ay: number }[] = [];
   private floorMoney = new Map<
     string,
     { sprite: Phaser.GameObjects.Image; bob: Phaser.Tweens.Tween }
@@ -54,10 +53,6 @@ export class OfficeScene extends Phaser.Scene {
   private slotN = 0;
 
   private bubble!: Phaser.GameObjects.Container;
-  private sel!: Phaser.GameObjects.Container;
-  private selText!: Phaser.GameObjects.Text;
-  private selMan = 1;
-  private selMax = 1;
   private nearest: Nearest = null;
 
   // 정산기 배출구 월드 좌표
@@ -66,6 +61,8 @@ export class OfficeScene extends Phaser.Scene {
 
   private onTradeClosed!: (trade: ClosedTrade, payout: Payout) => void;
   private onModalClosed!: (invested: boolean) => void;
+  private onWithdrawModalClosed!: () => void;
+  private onTradingBoardClosed!: () => void;
 
   constructor() {
     super("Office");
@@ -93,7 +90,6 @@ export class OfficeScene extends Phaser.Scene {
     this.keyS = kb.addKey(Phaser.Input.Keyboard.KeyCodes.S);
     this.keyD = kb.addKey(Phaser.Input.Keyboard.KeyCodes.D);
     this.keySpace = kb.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
-    this.keyEsc = kb.addKey(Phaser.Input.Keyboard.KeyCodes.ESC);
 
     // 복원: 세이브에 남은 돈뭉치를 정산기 앞에 스폰
     for (const p of store.payouts) {
@@ -108,12 +104,22 @@ export class OfficeScene extends Phaser.Scene {
       this.mode = "play";
       if (invested) sfx.power();
     };
+    this.onWithdrawModalClosed = () => {
+      this.mode = "play";
+    };
+    this.onTradingBoardClosed = () => {
+      this.mode = "play";
+    };
     bus.on(EV.TRADE_CLOSED, this.onTradeClosed);
     bus.on(EV.COIN_MODAL_CLOSED, this.onModalClosed);
+    bus.on(EV.WITHDRAW_MODAL_CLOSED, this.onWithdrawModalClosed);
+    bus.on(EV.TRADING_BOARD_CLOSED, this.onTradingBoardClosed);
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       bus.off(EV.TRADE_CLOSED, this.onTradeClosed);
       bus.off(EV.COIN_MODAL_CLOSED, this.onModalClosed);
+      bus.off(EV.WITHDRAW_MODAL_CLOSED, this.onWithdrawModalClosed);
+      bus.off(EV.TRADING_BOARD_CLOSED, this.onTradingBoardClosed);
     });
   }
 
@@ -170,12 +176,16 @@ export class OfficeScene extends Phaser.Scene {
     this.add.image(this.dispenseX, 460, "settle").setDepth(496);
     this.addSolid(this.dispenseX, 458, 44, 60);
 
+    // 트레이딩 시세판 (거실 중앙 상단) — 돈 없이도 코인 목록 열람
+    this.add.image(640, 130, "board").setDepth(130);
+    this.interactables.push({ type: "board", ax: 640, ay: 186 });
+
     // 로비 소품
     this.add.image(640, 440, "rug").setScale(CHAR_SCALE).setDepth(1);
     this.add.image(560, 180, "desk").setDepth(192);
     this.addSolid(560, 184, 38, 16);
     this.add.image(560, 224, "chair").setDepth(235);
-    this.add.image(640, 108, "clock").setScale(CHAR_SCALE).setDepth(160);
+    this.add.image(742, 112, "clock").setScale(CHAR_SCALE).setDepth(160);
 
     // 화분 (아기자기, 충돌 없음)
     for (const [x, y] of [
@@ -219,19 +229,6 @@ export class OfficeScene extends Phaser.Scene {
       .setOrigin(0.5);
     this.bubble = this.add.container(0, 0, [bg, bt]).setDepth(20000).setVisible(false);
 
-    // 출금 셀렉터
-    const sbg = this.add.rectangle(0, 0, 150, 40, 0xf2e3c2).setStrokeStyle(3, 0x3d2a1a);
-    const la = this.add
-      .text(-58, -1, "◀", { fontFamily: "monospace", fontSize: "20px", fontStyle: "bold", color: "#f28f7a" })
-      .setOrigin(0.5);
-    const ra = this.add
-      .text(58, -1, "▶", { fontFamily: "monospace", fontSize: "20px", fontStyle: "bold", color: "#f28f7a" })
-      .setOrigin(0.5);
-    this.selText = this.add
-      .text(0, -1, "₩1만", { fontFamily: "monospace", fontSize: "18px", fontStyle: "bold", color: "#3d2a1a" })
-      .setOrigin(0.5);
-    this.sel = this.add.container(0, 0, [sbg, la, ra, this.selText]).setDepth(20001).setVisible(false);
-
     // 머리 위 돈뭉치 (최대 3개)
     for (let i = 0; i < 3; i++) {
       this.carryMoney.push(this.add.image(0, 0, "money").setScale(CHAR_SCALE).setVisible(false));
@@ -251,10 +248,6 @@ export class OfficeScene extends Phaser.Scene {
       this.applyPose(false, time);
       this.bubble.setVisible(false);
       this.nearest = null;
-      if (this.mode === "selector") {
-        this.handleSelector();
-        this.sel.setPosition(this.player.x, this.player.y - 58);
-      }
     }
 
     this.player.setDepth(this.player.y + 20);
@@ -360,7 +353,10 @@ export class OfficeScene extends Phaser.Scene {
         sfx.kill();
         bus.emit(EV.TOAST, "금고에 입금했어요!", "good");
       } else {
-        this.openSelector();
+        bus.emit(EV.OPEN_WITHDRAW_MODAL);
+        this.mode = "modal";
+        this.player.setVelocity(0, 0);
+        this.bubble.setVisible(false);
       }
     } else if (n.type === "terminal") {
       if (store.carried > 0) {
@@ -371,57 +367,18 @@ export class OfficeScene extends Phaser.Scene {
       } else {
         bus.emit(EV.TOAST, "금고에서 돈을 꺼내오세요!", "bad");
       }
+    } else if (n.type === "board") {
+      // 트레이딩 시세판 — 업비트 실사이트 스타일 차트/시세 대시보드 (돈 없이도 언제든 열람)
+      bus.emit(EV.OPEN_TRADING_BOARD);
+      this.mode = "modal";
+      this.player.setVelocity(0, 0);
+      this.bubble.setVisible(false);
     } else if (n.type === "money" && n.id) {
       if (store.pickUpPayout(n.id)) {
         sfx.card();
         this.removeFloorMoney(n.id);
       }
     }
-  }
-
-  // ── 출금 셀렉터 ──────────────────────────────────
-  private openSelector(): void {
-    const maxMan = Math.floor(store.vaultBalance() / MONEY_UNIT);
-    if (maxMan < 1) {
-      bus.emit(EV.TOAST, "금고가 비었어요…", "bad");
-      return;
-    }
-    this.selMax = maxMan;
-    this.selMan = Math.min(10, maxMan);
-    this.mode = "selector";
-    this.player.setVelocity(0, 0);
-    this.sel.setVisible(true).setPosition(this.player.x, this.player.y - 58);
-    this.updateSelText();
-  }
-
-  private handleSelector(): void {
-    const clamp = (v: number): number => Phaser.Math.Clamp(v, 1, this.selMax);
-    if (Phaser.Input.Keyboard.JustDown(this.keyA) || Phaser.Input.Keyboard.JustDown(this.cursors.left))
-      this.selMan = clamp(this.selMan - 1);
-    if (Phaser.Input.Keyboard.JustDown(this.keyD) || Phaser.Input.Keyboard.JustDown(this.cursors.right))
-      this.selMan = clamp(this.selMan + 1);
-    if (Phaser.Input.Keyboard.JustDown(this.keyW) || Phaser.Input.Keyboard.JustDown(this.cursors.up))
-      this.selMan = clamp(this.selMan + 10);
-    if (Phaser.Input.Keyboard.JustDown(this.keyS) || Phaser.Input.Keyboard.JustDown(this.cursors.down))
-      this.selMan = clamp(this.selMan - 10);
-    this.updateSelText();
-
-    if (Phaser.Input.Keyboard.JustDown(this.keySpace)) {
-      store.withdraw(this.selMan * MONEY_UNIT);
-      sfx.gacha();
-      this.closeSelector();
-    } else if (Phaser.Input.Keyboard.JustDown(this.keyEsc)) {
-      this.closeSelector();
-    }
-  }
-
-  private updateSelText(): void {
-    this.selText.setText(`₩${this.selMan}만`);
-  }
-
-  private closeSelector(): void {
-    this.sel.setVisible(false);
-    this.mode = "play";
   }
 
   // ── 정산기 배출 / 바닥 돈뭉치 ─────────────────────

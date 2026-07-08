@@ -865,6 +865,29 @@ async fn get_candles(
         .map_err(|error| format!("캔들 파싱 실패: {error}"))
 }
 
+#[tauri::command]
+async fn get_trades(market: String, count: Option<u16>) -> Result<Value, String> {
+    let market = market.trim().to_uppercase();
+    if market.is_empty() {
+        return Err("마켓을 입력하세요. 예: KRW-BTC".to_string());
+    }
+
+    let count = count.unwrap_or(30).clamp(1, 500).to_string();
+    let url = format!("{UPBIT_BASE_URL}/v1/trades/ticks");
+
+    Client::new()
+        .get(url)
+        .query(&[("market", market.as_str()), ("count", count.as_str())])
+        .send()
+        .await
+        .map_err(|error| format!("체결 내역 요청 실패: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("체결 내역 응답 오류: {error}"))?
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("체결 내역 파싱 실패: {error}"))
+}
+
 async fn fetch_accounts(keys: &ApiKeys) -> Result<Value, String> {
     let authorization = auth_header(keys, None)?;
 
@@ -1078,6 +1101,7 @@ pub fn run() {
             get_quote_tickers,
             get_markets,
             get_candles,
+            get_trades,
             start_trade_volume_stream,
             stop_trade_volume_stream,
             start_orderbook_stream,

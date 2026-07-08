@@ -32,8 +32,16 @@ export const EV = {
   ORDER_BUSY: "order-busy",
   /** (없음) 월드 → UI: 코인 목록 모달 열기 */
   OPEN_COIN_MODAL: "open-coin-modal",
+  /** (market?: string) 월드 → UI: 업비트 스타일 트레이딩 보드(차트) 열기 — 거실 시세판 오브젝트 */
+  OPEN_TRADING_BOARD: "open-trading-board",
+  /** (없음) UI → 월드: 트레이딩 보드 닫힘 */
+  TRADING_BOARD_CLOSED: "trading-board-closed",
   /** (없음) 실계좌 API Key 입력 모달 열기 (저장된 키 없음/키 변경) */
   OPEN_KEY_MODAL: "open-key-modal",
+  /** (없음) 월드 → UI: 금고 출금 모달 열기 — 원하는 금액을 자유롭게 입력해 출금 */
+  OPEN_WITHDRAW_MODAL: "open-withdraw-modal",
+  /** (없음) UI → 월드: 출금 모달 닫힘 */
+  WITHDRAW_MODAL_CLOSED: "withdraw-modal-closed",
   /** (invested: boolean) UI → 월드: 모달 닫힘 (투자 성사 여부) */
   COIN_MODAL_CLOSED: "coin-modal-closed",
   /** (msg: string, kind?: "info"|"good"|"bad") 토스트 메시지 */

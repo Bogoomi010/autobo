@@ -7,7 +7,6 @@ import {
   saveApiKeys,
   type OrderResult,
 } from "../api/upbit";
-import { isTauri } from "../core/platform";
 import { loadGame, saveGame } from "../core/save";
 import {
   ORDER_POLL_MAX,
@@ -16,7 +15,7 @@ import {
   TRADE_LOG_MAX,
 } from "./config";
 import { bus, EV } from "./events";
-import type { Account, ClosedTrade, CoinInfo, Payout, Position, SaveData } from "./types";
+import type { Account, ClosedTrade, CoinInfo, Payout, Position, SaveData, Ticker } from "./types";
 
 let seq = 0;
 function uid(prefix: string): string {
@@ -46,8 +45,12 @@ function sumFills(order: OrderResult): { volume: number; funds: number; avgPrice
  * 브라우저 모의 모드: 가상 잔고로 동일한 흐름을 시뮬레이션한다.
  */
 class GameStore {
-  /** Tauri = 실거래, 브라우저 = 모의 (시세만 실제) */
-  readonly mode: "real" | "sim" = isTauri() ? "real" : "sim";
+  /**
+   * "real" = 실거래(실계좌) / "sim" = 모의(가상 잔고, 시세만 실제).
+   * 시작 시 모드 선택 창에서 결정 → setMode()로 확정한 뒤 init()을 호출한다.
+   * (실거래 주문은 Tauri Rust 커맨드 전용 — 브라우저에선 시세만 실제)
+   */
+  mode: "real" | "sim" = "sim";
   /** 실계좌(upbitkey) 연동 완료 여부 */
   connected = false;
   /** 매수 주문 진행 중 (중복 주문 방지) */
@@ -71,14 +74,28 @@ class GameStore {
     return Math.max(0, Math.floor(base - (this.mode === "real" ? outside : 0)));
   }
 
-  /** 총 자산 (금고 + 들고 있는 돈 + 투자 원금 + 바닥 돈뭉치) */
-  totalAssets(): number {
+  /**
+   * 총 자산 = 현금(금고 + 들고 있는 돈 + 바닥 돈뭉치) + 투자한 코인의 **현재 시세 가치**.
+   * @param tickers 최신 시세맵 — 있으면 포지션을 수량×현재가로 평가(미실현 손익 반영),
+   *                없으면 매수 원금(investedKrw)으로 대체한다.
+   */
+  totalAssets(tickers?: Map<string, Ticker>): number {
+    const positionsValue = this.positions.reduce((s, p) => {
+      const t = tickers?.get(p.market);
+      const current = t && p.entryPrice > 0 ? p.volume * t.price : p.investedKrw;
+      return s + current;
+    }, 0);
     return (
       this.vaultBalance() +
       this.carried +
-      this.positions.reduce((s, p) => s + p.investedKrw, 0) +
+      positionsValue +
       this.payouts.reduce((s, p) => s + p.amount, 0)
     );
+  }
+
+  /** 시작 시 모드 선택 창에서 확정 — init() 전에 반드시 1회 호출 */
+  setMode(mode: "real" | "sim"): void {
+    this.mode = mode;
   }
 
   /** 앱 시작 시 1회 — 세이브 로드 후 실계좌 연동(실거래 모드) */

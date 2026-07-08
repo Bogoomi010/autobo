@@ -7,19 +7,37 @@ import { OfficeScene } from "./scenes/OfficeScene";
 import { initHud } from "./ui/hud";
 import { initCoinModal } from "./ui/coinModal";
 import { initKeyModal } from "./ui/keyModal";
+import { initWithdrawModal } from "./ui/withdrawModal";
+import { initTradingBoard } from "./ui/tradingBoard/board";
+import { chooseMode } from "./ui/modeModal";
 import { sfx } from "./core/sfx";
 
 // 브라우저 오디오 정책 — 최초 입력 시 오디오 컨텍스트 생성
 window.addEventListener("pointerdown", () => sfx.init(), { once: true });
 window.addEventListener("keydown", () => sfx.init(), { once: true });
 
+// 버튼/카드 호버 효과음 — 위임 리스너 1개로 전체 UI(HUD·모달) 커버
+const HOVER_SELECTOR = ".pixel-btn:not(:disabled), .mode-card, .cm-row";
+window.addEventListener("mouseover", (e) => {
+  const target = (e.target as HTMLElement).closest?.(HOVER_SELECTOR);
+  if (!target) return;
+  const related = e.relatedTarget as HTMLElement | null;
+  if (related && target.contains(related)) return; // 같은 요소 내부 이동은 재생하지 않음
+  sfx.hover();
+});
+
 async function boot(): Promise<void> {
+  // 시작 모드 선택 — HUD 뱃지/키 버튼이 올바른 모드로 뜨도록 init 전에 확정한다
+  store.setMode(await chooseMode());
+
   // UI를 먼저 붙여 연동 상태(CONNECT)·토스트·키 입력 모달이 처음부터 보이게 한다
   initHud();
   initCoinModal();
   initKeyModal();
+  initWithdrawModal();
+  initTradingBoard();
 
-  await store.init(); // 세이브 로드 + 실계좌 연동 (키 없으면 입력 모달 / 모의 모드면 가상 잔고)
+  await store.init(); // 세이브 로드 + 실계좌 연동 (실거래+키 없으면 입력 모달 / 모의면 가상 잔고)
   investment.start(); // 마켓 목록 로드 + 시세 폴링 + 자동 익절/손절
 
   const game = new Phaser.Game({

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauri } from "../core/platform";
-import type { Account, CoinInfo, Ticker } from "../game/types";
+import type { Account, Candle, CandleUnit, CoinInfo, TradeTick, Ticker } from "../game/types";
 
 /**
  * 업비트 API 클라이언트.
@@ -27,6 +27,9 @@ interface RawTicker {
   trade_price: number;
   signed_change_rate: number;
   acc_trade_price_24h: number;
+  high_price: number;
+  low_price: number;
+  acc_trade_volume_24h: number;
 }
 
 async function quotation<T>(path: string, command: string, args: Record<string, unknown>): Promise<T> {
@@ -67,6 +70,85 @@ export async function fetchAllKrwTickers(): Promise<Ticker[]> {
     price: t.trade_price,
     changeRate24h: t.signed_change_rate,
     accTradePrice24h: t.acc_trade_price_24h,
+    high24h: t.high_price,
+    low24h: t.low_price,
+    accTradeVolume24h: t.acc_trade_volume_24h,
+  }));
+}
+
+/** 업비트 캔들 원본 (분/초/일/주/월 공통 필드만) */
+interface RawCandle {
+  candle_date_time_utc: string;
+  opening_price: number;
+  high_price: number;
+  low_price: number;
+  trade_price: number;
+  timestamp: number;
+  candle_acc_trade_volume: number;
+}
+
+/** CandleUnit → 업비트 캔들 경로 (Rust `get_candles`의 timeframe 분기와 1:1 대응) */
+function candlePath(unit: CandleUnit): string {
+  switch (unit) {
+    case "seconds":
+      return "/v1/candles/seconds";
+    case "1d":
+      return "/v1/candles/days";
+    case "1w":
+      return "/v1/candles/weeks";
+    case "1mo":
+      return "/v1/candles/months";
+    case "1y":
+      return "/v1/candles/years";
+    default:
+      return `/v1/candles/minutes/${unit.replace("m", "")}`;
+  }
+}
+
+/**
+ * 캔들(OHLCV) 조회 — 업비트는 최신순으로 내려주므로 과거→최신 오름차순으로 뒤집어 반환한다
+ * (차트 라이브러리는 시간 오름차순 입력을 요구한다).
+ */
+export async function fetchCandles(market: string, unit: CandleUnit, count = 200): Promise<Candle[]> {
+  const raw = await quotation<RawCandle[]>(
+    `${candlePath(unit)}?market=${encodeURIComponent(market)}&count=${count}`,
+    "get_candles",
+    { market, timeframe: unit, count }
+  );
+  return raw
+    .map((c) => ({
+      time: Math.floor(c.timestamp / 1000),
+      open: c.opening_price,
+      high: c.high_price,
+      low: c.low_price,
+      close: c.trade_price,
+      volume: c.candle_acc_trade_volume,
+    }))
+    .sort((a, b) => a.time - b.time);
+}
+
+/** 업비트 체결(틱) 원본 */
+interface RawTrade {
+  sequential_id: number;
+  trade_price: number;
+  trade_volume: number;
+  timestamp: number;
+  ask_bid: "ASK" | "BID";
+}
+
+/** 최근 체결 내역(틱) 조회 — 업비트 응답 순서(최신순) 그대로 반환 */
+export async function fetchRecentTrades(market: string, count = 30): Promise<TradeTick[]> {
+  const raw = await quotation<RawTrade[]>(
+    `/v1/trades/ticks?market=${encodeURIComponent(market)}&count=${count}`,
+    "get_trades",
+    { market, count }
+  );
+  return raw.map((t) => ({
+    id: String(t.sequential_id),
+    time: t.timestamp,
+    price: t.trade_price,
+    volume: t.trade_volume,
+    side: t.ask_bid === "BID" ? "bid" : "ask",
   }));
 }
 
@@ -95,7 +177,7 @@ function mapAccounts(raw: RawAccount[]): Account[] {
 
 /** ROOT 폴더(실행 파일 옆)에 암호화 저장된 API Key 존재 여부 */
 export async function hasSavedKeys(): Promise<boolean> {
-  if (!isTauri()) return true; // 모의 모드는 키 불필요
+  if (!isTauri()) return false; // 브라우저엔 암호화 키 저장소 없음 → 실거래 선택 시 키 입력 유도
   return (await invoke("has_saved_keys")) as boolean;
 }
 

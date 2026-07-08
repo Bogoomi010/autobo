@@ -97,7 +97,8 @@ export function initHud(): void {
     carryEl.box.classList.toggle("empty", carried <= 0);
   }
   function renderTotal(): void {
-    totalEl.val.textContent = krw(store.totalAssets());
+    // 투자 코인을 현재 시세로 평가 — 시세 갱신(refreshPnl)마다 총 자산도 갱신된다
+    totalEl.val.textContent = krw(store.totalAssets(tickers));
   }
 
   function renderPositions(positions: Position[]): void {

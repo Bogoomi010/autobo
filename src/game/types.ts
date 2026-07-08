@@ -19,6 +19,12 @@ export interface Ticker {
   changeRate24h: number;
   /** 24h 누적 거래대금 (KRW) — 목록 정렬용 */
   accTradePrice24h: number;
+  /** 24h 고가 (KRW) — 트레이딩 보드 헤더용 */
+  high24h: number;
+  /** 24h 저가 (KRW) — 트레이딩 보드 헤더용 */
+  low24h: number;
+  /** 24h 누적 거래량 (코인 수량) */
+  accTradeVolume24h: number;
 }
 
 /** 열린 포지션 — 이 게임에서 매수한 물량만 관리한다 (외부 보유 코인은 건드리지 않음) */
@@ -57,6 +63,45 @@ export interface Payout {
   id: string;
   amount: number;
   reason: "take-profit" | "stop-loss";
+}
+
+/** 정규화된 캔들(OHLCV) — 업비트 분/초/일/주/월 캔들 응답을 공통 형태로 변환한 값 */
+export interface Candle {
+  /** 유닉스 타임스탬프 (초) — lightweight-charts 의 `time` 필드로 그대로 사용 */
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+/** 캔들 조회 단위 — Rust `get_candles` / 업비트 캔들 API 경로와 1:1 매핑 */
+export type CandleUnit =
+  | "seconds"
+  | "1m"
+  | "3m"
+  | "5m"
+  | "10m"
+  | "15m"
+  | "30m"
+  | "60m"
+  | "240m"
+  | "1d"
+  | "1w"
+  | "1mo"
+  | "1y";
+
+/** 개별 체결(틱) — 업비트 `/v1/trades/ticks` 응답을 공통 형태로 변환한 값 */
+export interface TradeTick {
+  /** 업비트 sequential_id (문자열로 다룸 — 64비트 정밀도 손실 방지) */
+  id: string;
+  /** 체결 시각 (ms) */
+  time: number;
+  price: number;
+  volume: number;
+  /** BID = 매수 체결(상승가 매수 우세), ASK = 매도 체결 */
+  side: "bid" | "ask";
 }
 
 /** 업비트 계좌 (필요 필드만) */

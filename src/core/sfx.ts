@@ -3,6 +3,7 @@ export class Sfx {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
   private lastShoot = 0;
+  private lastHover = 0;
 
   /** 최초 사용자 입력 후 호출 (브라우저 오디오 정책) */
   init(): void {
@@ -44,6 +45,14 @@ export class Sfx {
     g.connect(this.master);
     o.start(t);
     o.stop(t + dur + 0.02);
+  }
+
+  /** 버튼/카드 마우스 호버 — 짧고 여린 블립 (연속 호버 시 과다 재생 방지) */
+  hover(): void {
+    const now = performance.now();
+    if (now - this.lastHover < 60) return;
+    this.lastHover = now;
+    this.tone(1180, 0.035, "sine", 0.05, 1500);
   }
 
   shoot(): void {
