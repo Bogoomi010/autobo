@@ -46,6 +46,11 @@ export const EV = {
   COIN_MODAL_CLOSED: "coin-modal-closed",
   /** (msg: string, kind?: "info"|"good"|"bad") 토스트 메시지 */
   TOAST: "toast",
+  /**
+   * (bots: TradeBot[], meta: { enabled: boolean; scanActive: boolean; lastScanAt: number|null })
+   * 로봇 매수봇 명단/상태 변경 — botDock UI 갱신용
+   */
+  BOTS_CHANGED: "bots-changed",
 } as const;
 
 // 타입 참조 유지용 (페이로드 계약 문서화)
