@@ -45,40 +45,42 @@ function injectStyles(): void {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #ffffff;
-  border: 1px solid #ebeef1;
-  font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", "맑은 고딕", "Apple SD Gothic Neo", "Noto Sans KR", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  color: #1e2329;
+  background: #f7ecd4;
+  font-family: "Galmuri11", "Malgun Gothic", sans-serif;
+  color: #3d2a1a;
   box-sizing: border-box;
   min-height: 0;
 }
 .ml-title {
   flex: none;
-  padding: 10px 12px 6px;
-  font-size: 13px;
+  padding: 6px 12px;
+  font-size: 12px;
   font-weight: 700;
-  border-bottom: 1px solid #ebeef1;
+  color: #3d2a1a;
+  background: #f2b135;
+  border-bottom: 3px solid #3d2a1a;
 }
 .ml-search-wrap {
   flex: none;
   padding: 8px 10px;
-  border-bottom: 1px solid #ebeef1;
+  background: #efe0c0;
+  border-bottom: 3px solid #3d2a1a;
 }
 .ml-search {
   width: 100%;
   box-sizing: border-box;
-  height: 28px;
+  height: 26px;
   padding: 0 8px;
   font-size: 12px;
-  border: 1px solid #ebeef1;
-  border-radius: 4px;
+  border: 2px solid #3d2a1a;
+  border-radius: 2px;
   outline: none;
-  color: #1e2329;
+  color: #3d2a1a;
   background: #ffffff;
   font-family: inherit;
 }
 .ml-search:focus {
-  border-color: #093687;
+  border-color: #2fbf9b;
 }
 .ml-grid {
   display: grid;
@@ -88,11 +90,11 @@ function injectStyles(): void {
 .ml-header {
   flex: none;
   padding: 0 10px;
-  height: 30px;
-  background: #f9fafb;
-  border-bottom: 1px solid #ebeef1;
+  height: 26px;
+  background: #efe0c0;
+  border-bottom: 2px solid #3d2a1a;
   font-size: 11px;
-  color: #8b95a1;
+  color: #8a5a33;
 }
 .ml-header .ml-th {
   cursor: pointer;
@@ -102,7 +104,7 @@ function injectStyles(): void {
   text-overflow: ellipsis;
 }
 .ml-header .ml-th.active {
-  color: #1e2329;
+  color: #3d2a1a;
   font-weight: 700;
 }
 .ml-body {
@@ -114,33 +116,33 @@ function injectStyles(): void {
   padding: 24px 12px;
   text-align: center;
   font-size: 12px;
-  color: #8b95a1;
+  color: #8a5a33;
 }
 .ml-row {
   padding: 0 10px;
-  height: 30px;
+  height: 28px;
   font-size: 12px;
-  border-bottom: 1px solid #ebeef1;
+  border-bottom: 1px solid rgba(61, 42, 26, 0.15);
   cursor: pointer;
   font-variant-numeric: tabular-nums;
 }
 .ml-row:hover {
-  background: #f5f7fa;
+  background: #efe0c0;
 }
 .ml-row.selected {
-  background: #e8f3ff;
+  background: rgba(47, 191, 155, 0.22);
 }
 .ml-row.hidden {
   display: none;
 }
 .ml-fav {
   text-align: center;
-  color: #c9d0d8;
+  color: #c9b892;
   font-size: 13px;
   line-height: 1;
 }
 .ml-fav.active {
-  color: #f6c944;
+  color: #f2b135;
 }
 .ml-name-cell {
   display: flex;
@@ -153,13 +155,14 @@ function injectStyles(): void {
   flex: none;
   width: 18px;
   height: 18px;
-  border-radius: 50%;
+  border: 2px solid #3d2a1a;
+  border-radius: 2px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 8px;
   font-weight: 700;
-  color: #1e2329;
+  color: #3d2a1a;
 }
 .ml-name-text {
   overflow: hidden;
@@ -172,8 +175,8 @@ function injectStyles(): void {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ml-up { color: #d24f45; }
-.ml-down { color: #1261c4; }
+.ml-up { color: #e5484d; }
+.ml-down { color: #3b82f6; }
 `;
   document.head.appendChild(style);
 }

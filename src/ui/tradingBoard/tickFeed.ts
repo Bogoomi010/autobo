@@ -1,3 +1,6 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { isTauri } from "../../core/platform";
 import type { TradeTick } from "../../game/types";
 import { fetchRecentTrades } from "../../api/upbit";
 
@@ -26,10 +29,9 @@ function injectStyleOnce(): void {
       display: flex;
       flex-direction: column;
       height: 100%;
-      background: #ffffff;
-      border: 1px solid #ebeef1;
-      color: #1e2329;
-      font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", "맑은 고딕", "Apple SD Gothic Neo", "Noto Sans KR", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f7ecd4;
+      color: #3d2a1a;
+      font-family: "Galmuri11", "Malgun Gothic", sans-serif;
       font-size: 12px;
       overflow-y: auto;
     }
@@ -37,22 +39,23 @@ function injectStyleOnce(): void {
       position: sticky;
       top: 0;
       z-index: 2;
-      padding: 8px 10px;
+      padding: 6px 10px;
       font-weight: 700;
-      background: #f9fafb;
-      border-bottom: 1px solid #ebeef1;
+      color: #3d2a1a;
+      background: #f2b135;
+      border-bottom: 3px solid #3d2a1a;
     }
     .tick-feed-header {
       position: sticky;
-      top: 29px;
+      top: 27px;
       z-index: 2;
       display: grid;
       grid-template-columns: 62px 1fr 64px 40px;
       gap: 4px;
       padding: 6px 10px;
-      background: #f9fafb;
-      border-bottom: 1px solid #ebeef1;
-      color: #8b95a1;
+      background: #efe0c0;
+      border-bottom: 2px solid #3d2a1a;
+      color: #8a5a33;
       font-size: 11px;
     }
     .tick-feed-header span:nth-child(1) { text-align: left; }
@@ -68,17 +71,17 @@ function injectStyleOnce(): void {
       grid-template-columns: 62px 1fr 64px 40px;
       gap: 4px;
       padding: 4px 10px;
-      border-bottom: 1px solid #ebeef1;
+      border-bottom: 1px solid rgba(61, 42, 26, 0.15);
       font-variant-numeric: tabular-nums;
     }
-    .tick-feed-row.bid { background: rgba(210, 79, 69, 0.07); }
-    .tick-feed-row.ask { background: rgba(18, 97, 196, 0.07); }
-    .tick-feed-row .time { text-align: left; color: #8b95a1; }
-    .tick-feed-row .price { text-align: right; font-weight: 600; }
-    .tick-feed-row .volume { text-align: right; color: #1e2329; }
-    .tick-feed-row .side { text-align: center; font-weight: 600; }
-    .tick-feed-row.bid .price, .tick-feed-row.bid .side { color: #d24f45; }
-    .tick-feed-row.ask .price, .tick-feed-row.ask .side { color: #1261c4; }
+    .tick-feed-row.bid { background: rgba(229, 72, 77, 0.1); }
+    .tick-feed-row.ask { background: rgba(59, 130, 246, 0.1); }
+    .tick-feed-row .time { text-align: left; color: #8a5a33; }
+    .tick-feed-row .price { text-align: right; font-weight: 700; }
+    .tick-feed-row .volume { text-align: right; color: #3d2a1a; }
+    .tick-feed-row .side { text-align: center; font-weight: 700; }
+    .tick-feed-row.bid .price, .tick-feed-row.bid .side { color: #e5484d; }
+    .tick-feed-row.ask .price, .tick-feed-row.ask .side { color: #3b82f6; }
   `;
   document.head.appendChild(style);
 }
@@ -155,11 +158,12 @@ export function createTickFeed(
   container.append(title, header, body);
 
   let currentMarket = "";
-  /** setMarket이 호출될 때마다 증가 — 이전 마켓의 늦게 도착한 폴링 결과를 무시하기 위한 토큰 */
+  /** setMarket이 호출될 때마다 증가 — 이전 마켓의 늦게 도착한 폴링/이벤트를 무시하기 위한 토큰 */
   let token = 0;
   let seenIds = new Set<string>();
   let isBackfill = true;
   let intervalId: ReturnType<typeof setInterval> | undefined;
+  let unlistenBoardTrade: UnlistenFn | null = null;
 
   function clearTimer(): void {
     if (intervalId !== undefined) {
@@ -168,6 +172,27 @@ export function createTickFeed(
     }
   }
 
+  /** Tauri 실시간 체결 스트림 정리 — 리스너 해제 + Rust 쪽 WebSocket 종료 */
+  function clearTauriStream(): void {
+    unlistenBoardTrade?.();
+    unlistenBoardTrade = null;
+    if (isTauri()) {
+      void invoke("stop_board_trade_stream").catch(() => {});
+    }
+  }
+
+  /** 새 체결 한 건을 목록 맨 위에 넣고 onTick 통지, 최대 행 수를 넘으면 오래된 것부터 제거 */
+  function insertFreshTick(tick: TradeTick): void {
+    body.insertBefore(buildRowEl(tick), body.firstChild);
+    onTick?.(tick);
+    while (body.childElementCount > MAX_ROWS) {
+      const last = body.lastElementChild;
+      if (!last) break;
+      body.removeChild(last);
+    }
+  }
+
+  /** REST 백필/폴링 — Tauri에서는 최초 1회만(목록 초기 채우기), 브라우저에서는 계속(실시간 근사) */
   async function poll(myToken: number): Promise<void> {
     let ticks: TradeTick[];
     try {
@@ -192,18 +217,44 @@ export function createTickFeed(
         body.appendChild(buildRowEl(tick));
       }
       isBackfill = false;
+      while (body.childElementCount > MAX_ROWS) {
+        const last = body.lastElementChild;
+        if (!last) break;
+        body.removeChild(last);
+      }
     } else {
       // 오래된 것부터 맨 위에 삽입 → 최종적으로 최신이 가장 위, onTick도 오래된 순으로 호출
-      for (const tick of freshTicks) {
-        body.insertBefore(buildRowEl(tick), body.firstChild);
-        onTick?.(tick);
-      }
+      for (const tick of freshTicks) insertFreshTick(tick);
     }
+  }
 
-    while (body.childElementCount > MAX_ROWS) {
-      const last = body.lastElementChild;
-      if (!last) break;
-      body.removeChild(last);
+  /** Tauri 전용 — 업비트 체결 WebSocket을 구독해 체결 건마다 즉시 반영한다(틱 단위 갱신) */
+  async function startTauriStream(market: string, myToken: number): Promise<void> {
+    try {
+      const unlisten = await listen<{ id: string; time: number; price: number; volume: number; side: string }>(
+        "board-trade-tick",
+        (event) => {
+          if (myToken !== token) return; // 그 사이 마켓이 바뀜 — 이 이벤트는 버린다
+          const payload = event.payload;
+          if (seenIds.has(payload.id)) return; // 백필과 겹치는 최초 1건 등 중복 방지
+          seenIds.add(payload.id);
+          insertFreshTick({
+            id: payload.id,
+            time: payload.time,
+            price: payload.price,
+            volume: payload.volume,
+            side: payload.side === "bid" ? "bid" : "ask",
+          });
+        }
+      );
+      if (myToken !== token) {
+        unlisten(); // 리스너 등록 도중 마켓이 또 바뀜 — 즉시 정리
+        return;
+      }
+      unlistenBoardTrade = unlisten;
+      await invoke("start_board_trade_stream", { market });
+    } catch {
+      // 스트림 연결 실패 — 백필로 채워진 목록은 유지되고, 이후 재열람 시 재시도된다
     }
   }
 
@@ -216,13 +267,19 @@ export function createTickFeed(
       isBackfill = true;
       body.innerHTML = "";
       clearTimer();
-      void poll(myToken);
-      intervalId = setInterval(() => {
-        void poll(myToken);
-      }, POLL_INTERVAL_MS);
+      clearTauriStream();
+
+      void poll(myToken); // 초기 목록 채우기(백필) — Tauri/브라우저 공통
+
+      if (isTauri()) {
+        void startTauriStream(market, myToken); // 이후 실시간 갱신은 웹소켓 틱 단위로
+      } else {
+        intervalId = setInterval(() => void poll(myToken), POLL_INTERVAL_MS); // 브라우저: REST 폴링으로 근사
+      }
     },
     destroy(): void {
       clearTimer();
+      clearTauriStream();
     },
   };
 }

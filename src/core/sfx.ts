@@ -4,6 +4,7 @@ export class Sfx {
   private master: GainNode | null = null;
   private lastShoot = 0;
   private lastHover = 0;
+  private lastFootLeft = true;
 
   /** 최초 사용자 입력 후 호출 (브라우저 오디오 정책) */
   init(): void {
@@ -53,6 +54,22 @@ export class Sfx {
     if (now - this.lastHover < 60) return;
     this.lastHover = now;
     this.tone(1180, 0.035, "sine", 0.05, 1500);
+  }
+
+  /** 걸음걸이 발소리 — 좌우 번갈아 살짝 다른 피치로 자연스러움을 준다 */
+  step(): void {
+    this.lastFootLeft = !this.lastFootLeft;
+    this.tone(this.lastFootLeft ? 95 : 80, 0.05, "square", 0.05, 55);
+  }
+
+  /** 월드 상호작용으로 메뉴/모달이 열릴 때(금고 출금, 코인 단말기, 시세판 등) */
+  select(): void {
+    this.tone(740, 0.05, "square", 0.12, 1040);
+  }
+
+  /** 상호작용 조건 미충족(돈이 없어 투자 불가 등) — 짧은 거부음 */
+  denied(): void {
+    this.tone(180, 0.09, "square", 0.14, 120);
   }
 
   shoot(): void {

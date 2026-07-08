@@ -9,6 +9,7 @@ import { bus, EV } from "../../game/events";
 import { coinPrice, krw, pct } from "../../game/format";
 import type { Candle, CandleUnit, CoinInfo, Ticker, TradeTick } from "../../game/types";
 import { investment } from "../../systems/InvestmentSystem";
+import { badgeColor } from "../uiKit";
 import { createPriceChart, type PriceChart } from "./chart";
 import { createMarketList, type MarketList } from "./marketList";
 import { createTickFeed, type TickFeed } from "./tickFeed";
@@ -63,64 +64,65 @@ function injectStyles(): void {
       display: none;
       align-items: center;
       justify-content: center;
-      background: rgba(20, 24, 28, 0.55);
+      background: rgba(26, 20, 16, 0.62);
       pointer-events: auto;
       z-index: 82;
-      font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", "맑은 고딕", "Apple SD Gothic Neo", "Noto Sans KR", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-family: "Galmuri11", "Malgun Gothic", sans-serif;
     }
     #tradingBoard.open { display: flex; }
     #tradingBoard .tb-panel {
       width: 1180px;
       height: 660px;
-      background: #ffffff;
-      border: 1px solid #ebeef1;
-      border-radius: 6px;
-      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+      background: #f7ecd4;
+      border: 4px solid #3d2a1a;
+      border-radius: 2px;
+      box-shadow: 0 4px 0 #3d2a1a;
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      color: #1e2329;
+      color: #3d2a1a;
     }
     #tradingBoard .tb-header {
       flex: none;
       display: flex;
       align-items: center;
       gap: 14px;
-      padding: 12px 16px;
-      background: #f9fafb;
-      border-bottom: 1px solid #ebeef1;
+      padding: 10px 14px;
+      background: #efe0c0;
+      border-bottom: 4px solid #3d2a1a;
     }
     #tradingBoard .tb-badge {
       flex: none;
       width: 30px;
       height: 30px;
-      border-radius: 50%;
+      border: 3px solid #3d2a1a;
+      border-radius: 2px;
       display: flex;
       align-items: center;
       justify-content: center;
       font-size: 11px;
       font-weight: 700;
-      color: #1e2329;
+      color: #3d2a1a;
     }
-    #tradingBoard .tb-name { flex: none; display: flex; flex-direction: column; line-height: 1.25; min-width: 96px; }
+    #tradingBoard .tb-name { flex: none; display: flex; flex-direction: column; line-height: 1.3; min-width: 96px; }
     #tradingBoard .tb-name .ko { font-size: 14px; font-weight: 700; }
-    #tradingBoard .tb-name .sym { font-size: 11px; color: #8b95a1; }
+    #tradingBoard .tb-name .sym { font-size: 11px; color: #8a5a33; }
     #tradingBoard .tb-price {
       flex: none;
-      font-size: 28px;
+      font-size: 24px;
       font-weight: 700;
       font-variant-numeric: tabular-nums;
       transition: background-color 0.25s ease;
       padding: 2px 6px;
-      border-radius: 4px;
+      border-radius: 2px;
     }
-    #tradingBoard .tb-price.flash-up { background-color: rgba(210, 79, 69, 0.16); }
-    #tradingBoard .tb-price.flash-down { background-color: rgba(18, 97, 196, 0.16); }
+    #tradingBoard .tb-price.flash-up { background-color: rgba(229, 72, 77, 0.22); }
+    #tradingBoard .tb-price.flash-down { background-color: rgba(59, 130, 246, 0.22); }
     #tradingBoard .tb-change {
       flex: none;
       display: flex;
       flex-direction: column;
-      line-height: 1.25;
+      line-height: 1.3;
       font-size: 13px;
       font-variant-numeric: tabular-nums;
     }
@@ -130,24 +132,26 @@ function injectStyles(): void {
       gap: 18px;
       justify-content: flex-end;
       font-size: 12px;
-      color: #8b95a1;
+      color: #8a5a33;
       font-variant-numeric: tabular-nums;
     }
-    #tradingBoard .tb-stats b { color: #1e2329; font-weight: 600; margin-left: 4px; }
-    #tradingBoard .tb-up { color: #d24f45; }
-    #tradingBoard .tb-down { color: #1261c4; }
+    #tradingBoard .tb-stats b { color: #3d2a1a; font-weight: 700; margin-left: 4px; }
+    #tradingBoard .tb-up { color: #e5484d; }
+    #tradingBoard .tb-down { color: #3b82f6; }
     #tradingBoard .tb-close {
       flex: none;
       width: 28px;
       height: 28px;
-      border: none;
-      background: transparent;
-      color: #8b95a1;
-      font-size: 16px;
+      border: 3px solid #3d2a1a;
+      border-radius: 2px;
+      background: #f7ecd4;
+      color: #3d2a1a;
+      font-size: 14px;
+      font-weight: 700;
       cursor: pointer;
-      border-radius: 4px;
+      box-shadow: 0 2px 0 #3d2a1a;
     }
-    #tradingBoard .tb-close:hover { background: #ebeef1; color: #1e2329; }
+    #tradingBoard .tb-close:hover { background: #f26d5b; color: #f7ecd4; transform: translateY(1px); box-shadow: 0 1px 0 #3d2a1a; }
     #tradingBoard .tb-body {
       flex: 1;
       display: flex;
@@ -158,28 +162,30 @@ function injectStyles(): void {
       min-width: 0;
       display: flex;
       flex-direction: column;
-      border-right: 1px solid #ebeef1;
+      border-right: 4px solid #3d2a1a;
     }
     #tradingBoard .tb-tabs {
       flex: none;
       display: flex;
       flex-wrap: wrap;
-      gap: 2px;
+      gap: 4px;
       padding: 6px 10px;
-      border-bottom: 1px solid #ebeef1;
+      background: #efe0c0;
+      border-bottom: 3px solid #3d2a1a;
     }
     #tradingBoard .tb-tab {
       font-family: inherit;
       font-size: 12px;
-      color: #8b95a1;
-      background: transparent;
-      border: none;
-      padding: 5px 10px;
-      border-radius: 4px;
+      font-weight: 700;
+      color: #8a5a33;
+      background: #f7ecd4;
+      border: 2px solid #3d2a1a;
+      border-radius: 2px;
+      padding: 4px 9px;
       cursor: pointer;
     }
-    #tradingBoard .tb-tab:hover { background: #f5f7fa; color: #1e2329; }
-    #tradingBoard .tb-tab.active { background: #e8f3ff; color: #093687; font-weight: 700; }
+    #tradingBoard .tb-tab:hover { background: #efe0c0; color: #3d2a1a; }
+    #tradingBoard .tb-tab.active { background: #2fbf9b; color: #f7ecd4; }
     #tradingBoard .tb-chart-wrap {
       flex: 1;
       min-height: 0;
@@ -190,11 +196,12 @@ function injectStyles(): void {
       display: flex;
       flex-direction: column;
       min-height: 0;
+      background: #f7ecd4;
     }
     #tradingBoard .tb-market-wrap {
       flex: 1 1 58%;
       min-height: 0;
-      border-bottom: 1px solid #ebeef1;
+      border-bottom: 4px solid #3d2a1a;
     }
     #tradingBoard .tb-tick-wrap {
       flex: 1 1 42%;
@@ -217,6 +224,10 @@ export function initTradingBoard(): void {
   let unit: CandleUnit = DEFAULT_UNIT;
   let marketsLoaded = false;
   let lastCandle: Candle | null = null;
+  let oldestCandle: Candle | null = null;
+  let loadingMoreHistory = false;
+  let noMoreHistory = false;
+  let loadToken = 0;
   let lastPrice = 0;
 
   let chart: PriceChart | null = null;
@@ -248,6 +259,7 @@ export function initTradingBoard(): void {
     if (headBadgeEl) {
       const sym = coin?.symbol ?? market;
       headBadgeEl.textContent = sym.slice(0, sym.length >= 4 ? 2 : sym.length).toUpperCase();
+      headBadgeEl.style.background = badgeColor(sym);
     }
     if (!ticker) return;
 
@@ -278,13 +290,51 @@ export function initTradingBoard(): void {
   }
 
   async function loadCandles(): Promise<void> {
+    const token = ++loadToken;
+    noMoreHistory = false;
+    loadingMoreHistory = false;
+    oldestCandle = null;
     try {
       const candles = await fetchCandles(market, unit, CANDLE_COUNT);
+      if (token !== loadToken) return; // 그 사이 마켓/주기가 또 바뀜 — 이 결과는 버린다
       chart?.setData(candles);
       lastCandle = candles.length > 0 ? candles[candles.length - 1] : null;
+      oldestCandle = candles.length > 0 ? candles[0] : null;
+      if (candles.length < CANDLE_COUNT) noMoreHistory = true; // 처음부터 이 정도가 전부(더 과거 없음)
     } catch {
-      bus.emit(EV.TOAST, "차트 데이터를 불러오지 못했어요", "bad");
+      if (token === loadToken) bus.emit(EV.TOAST, "차트 데이터를 불러오지 못했어요", "bad");
     }
+  }
+
+  /**
+   * 차트 왼쪽 끝 근처로 스크롤/축소했을 때(chart.ts의 onNeedMoreHistory) 과거 캔들을 추가로 불러와 이어붙인다.
+   * 이미 요청 중이거나 더 과거 데이터가 없으면 아무 것도 하지 않는다.
+   */
+  function handleNeedMoreHistory(): void {
+    if (loadingMoreHistory || noMoreHistory || !oldestCandle) return;
+    const token = loadToken;
+    const cutoff = oldestCandle.time * 1000;
+    loadingMoreHistory = true;
+    fetchCandles(market, unit, CANDLE_COUNT, cutoff)
+      .then((older) => {
+        if (token !== loadToken) return; // 그 사이 마켓/주기가 바뀜 — 이 결과는 버린다
+        // 안전망: to 경계값이 포함되어 중복 캔들이 오더라도 실제로 더 과거인 것만 반영한다
+        const cutoffTime = oldestCandle?.time ?? Infinity;
+        const fresh = older.filter((c) => c.time < cutoffTime);
+        if (fresh.length === 0) {
+          noMoreHistory = true;
+          return;
+        }
+        chart?.prependData(fresh);
+        oldestCandle = fresh[0];
+        if (older.length < CANDLE_COUNT) noMoreHistory = true; // 이번이 마지막 페이지였음
+      })
+      .catch(() => {
+        // 실패 시 조용히 둔다 — 다음 스크롤/줌에서 자연스럽게 재시도된다
+      })
+      .finally(() => {
+        if (token === loadToken) loadingMoreHistory = false;
+      });
   }
 
   function updateActiveTab(): void {
@@ -339,7 +389,6 @@ export function initTradingBoard(): void {
 
     headBadgeEl = document.createElement("div");
     headBadgeEl.className = "tb-badge";
-    headBadgeEl.style.background = "#e8f3ff";
 
     const nameBox = document.createElement("div");
     nameBox.className = "tb-name";
@@ -397,7 +446,7 @@ export function initTradingBoard(): void {
 
     updateActiveTab();
 
-    chart = createPriceChart(chartWrap);
+    chart = createPriceChart(chartWrap, handleNeedMoreHistory);
     marketListHandle = createMarketList(marketWrap, switchMarket);
     tickFeedHandle = createTickFeed(tickWrap, handleTick);
 

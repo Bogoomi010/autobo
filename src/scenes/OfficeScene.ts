@@ -9,6 +9,8 @@ const WORLD_TOP = 64; // 상단 DOM HUD 영역
 const CHAR_SCALE = 2;
 const SPEED = 160;
 const INTERACT_RANGE = 60;
+// 걷기 애니메이션 [0,1,0,2] @ 8fps = 0.5초 주기, 발이 땅에 닿는 프레임(0)이 주기당 2번(0.25초 간격)
+const STEP_INTERVAL_MS = 250;
 
 // 방 인테리어 경계 (벽 32px)
 const SAFE_X0 = 32;
@@ -54,6 +56,7 @@ export class OfficeScene extends Phaser.Scene {
 
   private bubble!: Phaser.GameObjects.Container;
   private nearest: Nearest = null;
+  private lastStepTime = 0;
 
   // 정산기 배출구 월드 좌표
   private readonly dispenseX = 1140;
@@ -274,6 +277,10 @@ export class OfficeScene extends Phaser.Scene {
         this.flip = vx < 0;
       } else if (vy < 0) this.facing = "up";
       else this.facing = "down";
+      if (time - this.lastStepTime >= STEP_INTERVAL_MS) {
+        this.lastStepTime = time;
+        sfx.step();
+      }
     } else {
       this.player.setVelocity(0, 0);
     }
@@ -353,6 +360,7 @@ export class OfficeScene extends Phaser.Scene {
         sfx.kill();
         bus.emit(EV.TOAST, "금고에 입금했어요!", "good");
       } else {
+        sfx.select();
         bus.emit(EV.OPEN_WITHDRAW_MODAL);
         this.mode = "modal";
         this.player.setVelocity(0, 0);
@@ -360,15 +368,18 @@ export class OfficeScene extends Phaser.Scene {
       }
     } else if (n.type === "terminal") {
       if (store.carried > 0) {
+        sfx.select();
         bus.emit(EV.OPEN_COIN_MODAL);
         this.mode = "modal";
         this.player.setVelocity(0, 0);
         this.bubble.setVisible(false);
       } else {
+        sfx.denied();
         bus.emit(EV.TOAST, "금고에서 돈을 꺼내오세요!", "bad");
       }
     } else if (n.type === "board") {
       // 트레이딩 시세판 — 업비트 실사이트 스타일 차트/시세 대시보드 (돈 없이도 언제든 열람)
+      sfx.select();
       bus.emit(EV.OPEN_TRADING_BOARD);
       this.mode = "modal";
       this.player.setVelocity(0, 0);

@@ -22,6 +22,8 @@ type SessionApiKeys = Mutex<Option<ApiKeys>>;
 type TradeStreamState = Mutex<Option<JoinHandle<()>>>;
 
 struct OrderbookStreamState(Mutex<Option<JoinHandle<()>>>);
+/// 트레이딩 보드 전용 단일 마켓 실시간 체결(틱) 스트림 — 집계 없이 체결 건마다 그대로 프론트에 전달한다
+struct BoardTradeStreamState(Mutex<Option<JoinHandle<()>>>);
 
 #[derive(Debug, Serialize, Deserialize)]
 struct JwtClaims {
@@ -63,6 +65,37 @@ struct UpbitTradeMessage {
     trade_timestamp: Option<i64>,
     #[serde(default)]
     ask_bid: Option<String>,
+    #[serde(default)]
+    sequential_id: Option<i64>,
+}
+
+/// 트레이딩 보드로 그대로 내보내는 체결 한 건 (프론트 TradeTick과 1:1 대응)
+#[derive(Debug, Clone, Serialize)]
+struct BoardTradeTick {
+    id: String,
+    time: i64,
+    price: f64,
+    volume: f64,
+    side: String,
+}
+
+impl From<UpbitTradeMessage> for BoardTradeTick {
+    fn from(message: UpbitTradeMessage) -> Self {
+        let time = message.trade_timestamp.unwrap_or_default();
+        Self {
+            id: message
+                .sequential_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| time.to_string()),
+            time,
+            price: message.trade_price,
+            volume: message.trade_volume,
+            side: match message.ask_bid.as_deref() {
+                Some("BID") => "bid".to_string(),
+                _ => "ask".to_string(),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -758,6 +791,106 @@ async fn stop_trade_volume_stream(
     Ok(())
 }
 
+/// 트레이딩 보드 전용 — 단일 마켓의 체결을 집계/스로틀 없이 건마다 즉시 emit한다(캔들 틱 단위 갱신용).
+async fn run_board_trade_stream(app: AppHandle, market: String) {
+    let mut reconnect_delay = Duration::from_secs(1);
+
+    loop {
+        let connection = connect_async(UPBIT_WEBSOCKET_URL).await;
+        let (mut websocket, _) = match connection {
+            Ok(connection) => connection,
+            Err(error) => {
+                let _ = app.emit("board-trade-status", format!("체결 스트림 연결 실패: {error}"));
+                tokio::time::sleep(reconnect_delay).await;
+                reconnect_delay = (reconnect_delay * 2).min(Duration::from_secs(30));
+                continue;
+            }
+        };
+
+        reconnect_delay = Duration::from_secs(1);
+        let request = json!([
+            { "ticket": Uuid::new_v4().to_string() },
+            { "type": "trade", "codes": [&market] },
+            { "format": "DEFAULT" }
+        ]);
+
+        if let Err(error) = websocket.send(Message::Text(request.to_string())).await {
+            let _ = app.emit("board-trade-status", format!("체결 스트림 구독 실패: {error}"));
+            tokio::time::sleep(reconnect_delay).await;
+            continue;
+        }
+
+        let _ = app.emit("board-trade-status", "연결됨");
+
+        loop {
+            let message = tokio::time::timeout(Duration::from_secs(1), websocket.next()).await;
+            match message {
+                Ok(Some(Ok(message))) => match parse_trade_message(message) {
+                    Ok(Some(trade)) => {
+                        let _ = app.emit("board-trade-tick", BoardTradeTick::from(trade));
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let _ = app.emit("board-trade-status", error);
+                        break;
+                    }
+                },
+                Ok(Some(Err(error))) => {
+                    let _ = app.emit("board-trade-status", format!("체결 스트림 수신 실패: {error}"));
+                    break;
+                }
+                Ok(None) => break,
+                Err(_) => {} // idle timeout — 루프 유지, 연결은 살아있음
+            }
+        }
+
+        tokio::time::sleep(reconnect_delay).await;
+        reconnect_delay = (reconnect_delay * 2).min(Duration::from_secs(30));
+    }
+}
+
+#[tauri::command]
+async fn start_board_trade_stream(
+    app: AppHandle,
+    market: String,
+    board_trade_stream: tauri::State<'_, BoardTradeStreamState>,
+) -> Result<(), String> {
+    let market = market.trim().to_uppercase();
+    if !market.starts_with("KRW-") || market.len() <= 4 {
+        return Err("체결을 감시할 KRW 마켓을 선택하세요.".to_string());
+    }
+
+    let mut guard = board_trade_stream
+        .0
+        .lock()
+        .map_err(|_| "체결 스트림 상태를 사용할 수 없습니다.".to_string())?;
+
+    if let Some(handle) = guard.take() {
+        handle.abort();
+    }
+
+    *guard = Some(tauri::async_runtime::spawn(run_board_trade_stream(
+        app, market,
+    )));
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_board_trade_stream(
+    board_trade_stream: tauri::State<'_, BoardTradeStreamState>,
+) -> Result<(), String> {
+    let mut guard = board_trade_stream
+        .0
+        .lock()
+        .map_err(|_| "체결 스트림 상태를 사용할 수 없습니다.".to_string())?;
+
+    if let Some(handle) = guard.take() {
+        handle.abort();
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 async fn get_ticker(markets: String) -> Result<Value, String> {
     let markets = markets.trim().to_uppercase();
@@ -826,6 +959,7 @@ async fn get_candles(
     market: String,
     timeframe: String,
     count: Option<u16>,
+    to: Option<String>,
 ) -> Result<Value, String> {
     let market = market.trim().to_uppercase();
     if market.is_empty() {
@@ -852,9 +986,17 @@ async fn get_candles(
     let count = count.unwrap_or(100).clamp(1, 200).to_string();
     let url = format!("{UPBIT_BASE_URL}/v1/{path}");
 
+    // to: 이 시각(UTC ISO 8601) 이전 캔들을 조회 — 과거 스크롤 시 페이지네이션 커서로 사용
+    let mut query: Vec<(&str, &str)> = vec![("market", market.as_str()), ("count", count.as_str())];
+    if let Some(to) = to.as_deref() {
+        if !to.trim().is_empty() {
+            query.push(("to", to));
+        }
+    }
+
     Client::new()
         .get(url)
-        .query(&[("market", market.as_str()), ("count", count.as_str())])
+        .query(&query)
         .send()
         .await
         .map_err(|error| format!("캔들 요청 실패: {error}"))?
@@ -1095,6 +1237,7 @@ pub fn run() {
         .manage(Mutex::new(None::<ApiKeys>))
         .manage(Mutex::new(None::<JoinHandle<()>>))
         .manage(OrderbookStreamState(Mutex::new(None::<JoinHandle<()>>)))
+        .manage(BoardTradeStreamState(Mutex::new(None::<JoinHandle<()>>)))
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_ticker,
@@ -1106,6 +1249,8 @@ pub fn run() {
             stop_trade_volume_stream,
             start_orderbook_stream,
             stop_orderbook_stream,
+            start_board_trade_stream,
+            stop_board_trade_stream,
             has_saved_keys,
             save_api_keys,
             connect_upbitkey_account,

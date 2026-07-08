@@ -108,12 +108,20 @@ function candlePath(unit: CandleUnit): string {
 /**
  * 캔들(OHLCV) 조회 — 업비트는 최신순으로 내려주므로 과거→최신 오름차순으로 뒤집어 반환한다
  * (차트 라이브러리는 시간 오름차순 입력을 요구한다).
+ * @param to 이 시각(ms, exclusive) 이전 캔들만 조회 — 차트를 과거로 스크롤할 때 페이지네이션 커서로 사용
  */
-export async function fetchCandles(market: string, unit: CandleUnit, count = 200): Promise<Candle[]> {
+export async function fetchCandles(
+  market: string,
+  unit: CandleUnit,
+  count = 200,
+  to?: number
+): Promise<Candle[]> {
+  const toParam = to !== undefined ? new Date(to).toISOString() : undefined;
+  const query = `market=${encodeURIComponent(market)}&count=${count}${toParam ? `&to=${encodeURIComponent(toParam)}` : ""}`;
   const raw = await quotation<RawCandle[]>(
-    `${candlePath(unit)}?market=${encodeURIComponent(market)}&count=${count}`,
+    `${candlePath(unit)}?${query}`,
     "get_candles",
-    { market, timeframe: unit, count }
+    { market, timeframe: unit, count, to: toParam }
   );
   return raw
     .map((c) => ({
