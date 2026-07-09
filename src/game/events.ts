@@ -51,6 +51,8 @@ export const EV = {
    * 로봇 매수봇 명단/상태 변경 — botDock UI 갱신용
    */
   BOTS_CHANGED: "bots-changed",
+  /** (없음) 봇 생성 창 열기 — 예산/동작 시간대/익절·손절 %를 입력받아 botEngine.addBot 호출 */
+  OPEN_BOT_CREATE_MODAL: "open-bot-create-modal",
 } as const;
 
 // 타입 참조 유지용 (페이로드 계약 문서화)

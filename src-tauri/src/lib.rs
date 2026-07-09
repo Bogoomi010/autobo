@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha512};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -54,6 +55,43 @@ struct OrderRequest {
     identifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     time_in_force: Option<String>,
+}
+
+/// 로봇 매수봇 매수/매도 로그 1건. 필드명은 프론트(`BotTradeLogEntry`)와 동일한 snake_case.
+#[derive(Debug, Deserialize)]
+struct BotTradeLogEntry {
+    timestamp: String,
+    trade_id: String,
+    bot_id: String,
+    bot_name: String,
+    action: String,
+    market: String,
+    name_ko: Option<String>,
+    mode: String,
+    price: f64,
+    volume: f64,
+    invested_krw: f64,
+    pnl_krw: Option<f64>,
+    pnl_rate: Option<f64>,
+    reason: String,
+}
+
+/// 로봇 매수봇 보유 중 시장 스냅샷 1건. 필드명은 프론트(`BotMarketLogEntry`)와 동일한 snake_case.
+/// bot_trades_log.csv와 trade_id로 조인해 거래 종료 후 시장 상황 대 수익결과를 비교하는 데 쓴다.
+#[derive(Debug, Deserialize)]
+struct BotMarketLogEntry {
+    timestamp: String,
+    trade_id: String,
+    bot_id: String,
+    bot_name: String,
+    market: String,
+    mode: String,
+    price: f64,
+    pnl_rate: f64,
+    trade_value_accel: f64,
+    bid_ratio: f64,
+    collapse_score: f64,
+    retracement: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1046,6 +1084,86 @@ async fn fetch_accounts(keys: &ApiKeys) -> Result<Value, String> {
         .map_err(|error| format!("잔고 파싱 실패: {error}"))
 }
 
+// ---------- 로봇 매수봇 매수/매도 로그 (ROOT/bot_trades_log.csv, 누적 기록) ----------
+
+fn bot_log_path(filename: &str) -> Result<PathBuf, String> {
+    Ok(upbitkey_path()?.with_file_name(filename))
+}
+
+/// CSV 필드 이스케이프 — 큰따옴표로 감싸고 내부 큰따옴표는 두 번 반복
+fn csv_field(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn opt_f64_field(value: Option<f64>) -> String {
+    value.map(|v| v.to_string()).unwrap_or_default()
+}
+
+/// CSV에 한 행을 추가한다. 파일이 없으면 만들고 헤더부터 쓴다(누적 기록 전제, 로테이션 없음).
+fn append_csv_row(path: &PathBuf, header: &str, row_fields: &[String]) -> Result<(), String> {
+    let is_new = !path.exists();
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| format!("로그 파일을 열 수 없습니다: {error}"))?;
+
+    if is_new {
+        writeln!(file, "{header}").map_err(|error| format!("로그 헤더 기록 실패: {error}"))?;
+    }
+
+    writeln!(file, "{}", row_fields.join(","))
+        .map_err(|error| format!("로그 기록 실패: {error}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn log_bot_trade(entry: BotTradeLogEntry) -> Result<(), String> {
+    let path = bot_log_path("bot_trades_log.csv")?;
+    let header = "timestamp,trade_id,bot_id,bot_name,action,market,name_ko,mode,price,volume,invested_krw,pnl_krw,pnl_rate,reason";
+    let row = vec![
+        csv_field(&entry.timestamp),
+        csv_field(&entry.trade_id),
+        csv_field(&entry.bot_id),
+        csv_field(&entry.bot_name),
+        csv_field(&entry.action),
+        csv_field(&entry.market),
+        csv_field(entry.name_ko.as_deref().unwrap_or("")),
+        csv_field(&entry.mode),
+        entry.price.to_string(),
+        entry.volume.to_string(),
+        entry.invested_krw.to_string(),
+        opt_f64_field(entry.pnl_krw),
+        opt_f64_field(entry.pnl_rate),
+        csv_field(&entry.reason),
+    ];
+    append_csv_row(&path, header, &row)
+}
+
+#[tauri::command]
+fn log_market_snapshot(entry: BotMarketLogEntry) -> Result<(), String> {
+    let path = bot_log_path("bot_market_log.csv")?;
+    let header =
+        "timestamp,trade_id,bot_id,bot_name,market,mode,price,pnl_rate,trade_value_accel,bid_ratio,collapse_score,retracement";
+    let row = vec![
+        csv_field(&entry.timestamp),
+        csv_field(&entry.trade_id),
+        csv_field(&entry.bot_id),
+        csv_field(&entry.bot_name),
+        csv_field(&entry.market),
+        csv_field(&entry.mode),
+        entry.price.to_string(),
+        entry.pnl_rate.to_string(),
+        entry.trade_value_accel.to_string(),
+        entry.bid_ratio.to_string(),
+        entry.collapse_score.to_string(),
+        entry.retracement.to_string(),
+    ];
+    append_csv_row(&path, header, &row)
+}
+
 #[tauri::command]
 fn has_saved_keys() -> bool {
     encrypted_key_path()
@@ -1252,6 +1370,8 @@ pub fn run() {
             start_board_trade_stream,
             stop_board_trade_stream,
             has_saved_keys,
+            log_bot_trade,
+            log_market_snapshot,
             save_api_keys,
             connect_upbitkey_account,
             get_session_accounts,

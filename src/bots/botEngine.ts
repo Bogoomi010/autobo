@@ -3,7 +3,15 @@
  * 게임 아키텍처로 이식 — React state 대신 싱글턴 + `bus` 이벤트로 UI(botDock.ts)에 통지한다.
  *
  * 1초 tick 루프: KST 09:00~09:30(평일, 또는 수동 스캔 5분) 스캔 창 동안 급등 코인을 탐지해
- * 대기 중인 봇에게 배정 → 봇당 예산(기본 1만원) 시장가 매수 → +3% 익절 / -2% 손절 자동 매도.
+ * 대기 중인 봇에게 배정 → 봇당 예산(기본 1만원) 시장가 매수 → 익절/손절 자동 매도.
+ *
+ * 단타봇/장투봇은 매도 알고리즘 자체는 같고(고정 익절/손절 + 붕괴 스코어 조기매도),
+ * "매도를 허용하는 시점"만 다르다.
+ * - 단타봇: 세션(스캔 창) 시간 안에서만 매도 판정을 하며, 세션이 끝나면 보유 중이어도 강제 매도한다.
+ * - 장투봇: 매수 후 최소 24시간이 지나기 전에는 어떤 매도 판정도 하지 않고 계속 보유한다.
+ * 각자의 조건을 통과한 뒤부터는 동일하게 고정 익절/손절을 먼저 확인하고, 그 사이 구간에서는
+ * 붕괴 스코어(진입 스코어의 반전판 — 고점 대비 되돌림/체결대금 감속/매도 우위 전환)가 임계값을
+ * 넘으면 조기 매도한다.
  * 봇은 플레이어가 들고 다니는 돈(carried)과 무관하게 독립적으로 동작한다.
  */
 import { invoke } from "@tauri-apps/api/core";
@@ -11,12 +19,21 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { fetchAccounts, placeOrder } from "../api/upbit";
 import { isTauri } from "../core/platform";
 import { bus, EV } from "../game/events";
+import { krw } from "../game/format";
 import { store } from "../game/state";
 import { investment } from "../systems/InvestmentSystem";
-import { scoreSurgeCandidates } from "./surge";
+import { COLLAPSE_THRESHOLD, scoreCollapse, scoreSurgeCandidates } from "./surge";
 import {
+  BOT_HOLD_LIMIT_MS,
+  BOT_TYPE_LABEL,
   DEFAULT_BOT_ENGINE_CONFIG,
+  DEFAULT_BOT_SETTINGS,
   type BotEngineConfig,
+  type BotMarketLogEntry,
+  type BotSettings,
+  type BotTradeLogEntry,
+  type BotType,
+  type ScanWindowConfig,
   type TradeBot,
   type TradeVolumeSnapshot,
 } from "./types";
@@ -31,6 +48,12 @@ const SCORE_THRESHOLD = 25; // 배정 최소 점수(0~100)
 const FILL_POLL_TRIES = 5; // 실거래 체결 수량 확인 재시도
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000; // Asia/Seoul UTC+9 (DST 없음)
 
+// 보유 중 시장 스냅샷 로그 샘플링 주기 — 단타봇은 세션이 짧아 촘촘히, 장투봇은 최소 24시간+ 보유라 느슨하게
+const MARKET_LOG_INTERVAL_MS: Record<BotType, number> = {
+  scalp: 5_000,
+  longterm: 60_000,
+};
+
 const ROSTER_KEY = "coin_office_bots_roster";
 const ENABLED_KEY = "coin_office_bots_enabled";
 
@@ -39,6 +62,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 interface RosterEntry {
   id: string;
   name: string;
+  settings: BotSettings;
 }
 
 type KstParts = { weekday: number; hour: number; minute: number; minutesOfDay: number };
@@ -51,13 +75,41 @@ function kstPartsOf(now: number): KstParts {
   return { weekday: d.getUTCDay(), hour, minute, minutesOfDay: hour * 60 + minute };
 }
 
-/** 평일 KST 스캔 창(기본 09:00~09:30) 내부인지 */
-function isWithinDailyScanWindow(config: BotEngineConfig, now: number): boolean {
+/** now(ms, UTC epoch) → KST 날짜 키(YYYY-MM-DD) — 일일 손실 한도 리셋 기준 */
+function kstDateKey(now: number): string {
+  return new Date(now + KST_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/** 평일 KST 스캔 창(봇마다 설정 가능) 내부인지 */
+function isWithinDailyScanWindow(scanWindow: ScanWindowConfig, now: number): boolean {
   const { weekday, minutesOfDay } = kstPartsOf(now);
   if (weekday === 0 || weekday === 6) return false; // 주말 제외
-  const start = config.scanWindow.startHourKst * 60 + config.scanWindow.startMinute;
-  const end = start + config.scanWindow.durationMinutes;
+  const start = scanWindow.startHourKst * 60 + scanWindow.startMinute;
+  const end = start + scanWindow.durationMinutes;
   return minutesOfDay >= start && minutesOfDay < end;
+}
+
+/** 오늘(KST) 스캔 창이 끝나는 시각의 epoch ms — 단타봇의 세션 강제 마감 기준 */
+function scanWindowEndMs(scanWindow: ScanWindowConfig, now: number): number {
+  const kst = new Date(now + KST_OFFSET_MS);
+  const kstMidnightUtcMs = Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()) - KST_OFFSET_MS;
+  const endMinutesOfDay = scanWindow.startHourKst * 60 + scanWindow.startMinute + scanWindow.durationMinutes;
+  return kstMidnightUtcMs + endMinutesOfDay * 60_000;
+}
+
+function isValidSettings(value: unknown): value is BotSettings {
+  if (!value || typeof value !== "object") return false;
+  const s = value as BotSettings;
+  return (
+    (s.botType === "scalp" || s.botType === "longterm") &&
+    typeof s.budgetKrw === "number" &&
+    typeof s.takeProfitRate === "number" &&
+    typeof s.stopLossRate === "number" &&
+    !!s.scanWindow &&
+    typeof s.scanWindow.startHourKst === "number" &&
+    typeof s.scanWindow.startMinute === "number" &&
+    typeof s.scanWindow.durationMinutes === "number"
+  );
 }
 
 function loadRoster(): RosterEntry[] {
@@ -66,10 +118,9 @@ function loadRoster(): RosterEntry[] {
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (e): e is RosterEntry =>
-        !!e && typeof e === "object" && typeof (e as RosterEntry).id === "string" && typeof (e as RosterEntry).name === "string"
-    );
+    return parsed
+      .filter((e): e is { id: string; name: string; settings?: unknown } => !!e && typeof e === "object" && typeof (e as RosterEntry).id === "string" && typeof (e as RosterEntry).name === "string")
+      .map((e) => ({ id: e.id, name: e.name, settings: isValidSettings(e.settings) ? e.settings : DEFAULT_BOT_SETTINGS }));
   } catch {
     return [];
   }
@@ -77,23 +128,27 @@ function loadRoster(): RosterEntry[] {
 
 function saveRoster(bots: TradeBot[]): void {
   try {
-    const roster: RosterEntry[] = bots.map((b) => ({ id: b.id, name: b.name }));
+    const roster: RosterEntry[] = bots.map((b) => ({ id: b.id, name: b.name, settings: b.settings }));
     localStorage.setItem(ROSTER_KEY, JSON.stringify(roster));
   } catch {
     // localStorage 불가 환경은 조용히 무시
   }
 }
 
-function makeBot(id: string, name: string): TradeBot {
+function makeBot(id: string, name: string, settings: BotSettings): TradeBot {
   return {
     id,
     name,
     state: "idle",
+    settings,
     targetMarket: null,
     targetNameKo: null,
     entryPrice: null,
     volume: null,
     investedKrw: 0,
+    peakPriceSinceEntry: null,
+    tradeId: null,
+    lastMarketLogAt: null,
     currentPnlRate: null,
     lastMessage: "대기 중",
     lastActionAt: null,
@@ -102,13 +157,34 @@ function makeBot(id: string, name: string): TradeBot {
   };
 }
 
-function nextBotName(bots: TradeBot[]): string {
+const BOT_NAME_RE = /^(?:단타봇|장투봇)([A-Z]+)$/;
+
+/** 1→A, 2→B, ..., 26→Z, 27→AA ... (스프레드시트 열 이름 방식) */
+function indexToLetters(n: number): string {
+  let s = "";
+  let x = n;
+  while (x > 0) {
+    const rem = (x - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    x = Math.floor((x - 1) / 26);
+  }
+  return s;
+}
+
+function lettersToIndex(letters: string): number {
+  let n = 0;
+  for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n;
+}
+
+/** 단타봇/장투봇 구분 없이 생성 순서대로 A, B, C... 문자를 붙인다(예: 단타봇A, 장투봇B) */
+function nextBotName(bots: TradeBot[], botType: BotType): string {
   let max = 0;
   for (const b of bots) {
-    const m = /^로봇-(\d+)$/.exec(b.name);
-    if (m) max = Math.max(max, Number(m[1]));
+    const m = BOT_NAME_RE.exec(b.name);
+    if (m) max = Math.max(max, lettersToIndex(m[1]));
   }
-  return `로봇-${max + 1}`;
+  return `${BOT_TYPE_LABEL[botType]}${indexToLetters(max + 1)}`;
 }
 
 function uid(): string {
@@ -117,7 +193,7 @@ function uid(): string {
 }
 
 class BotEngine {
-  private bots: TradeBot[] = loadRoster().map((r) => makeBot(r.id, r.name));
+  private bots: TradeBot[] = loadRoster().map((r) => makeBot(r.id, r.name, r.settings));
   private config: BotEngineConfig = DEFAULT_BOT_ENGINE_CONFIG;
   private enabled = localStorage.getItem(ENABLED_KEY) === "1";
   private scanActive = false;
@@ -127,6 +203,14 @@ class BotEngine {
   private inFlight = new Set<string>();
   private tickTimer: ReturnType<typeof setInterval> | null = null;
   private tickRunning = false;
+
+  // 리스크 가드 — 앱 재시작 시 초기화된다(런타임 포지션과 동일하게 영속화하지 않음)
+  private dailyKey: string = kstDateKey(Date.now());
+  private dailyPnlKrw = 0;
+  private equityPeakKrw = 0;
+  private cumulativeRealizedKrw = 0;
+  private buyHaltedByDailyLoss = false;
+  private consecutiveApiErrors = 0;
 
   // Tauri 전용 — 체결 스트림으로 급등 가속도/매수비중 계산용 롤링 이력을 만든다.
   // 스트림이 없으면(브라우저) 이력이 비어 있고, surge.ts가 자동으로 중립값을 반환한다.
@@ -168,8 +252,8 @@ class BotEngine {
     this.notify();
   }
 
-  addBot(): void {
-    this.bots = [...this.bots, makeBot(uid(), nextBotName(this.bots))];
+  addBot(settings: BotSettings): void {
+    this.bots = [...this.bots, makeBot(uid(), nextBotName(this.bots, settings.botType), settings)];
     saveRoster(this.bots);
     this.notify();
   }
@@ -252,6 +336,60 @@ class BotEngine {
     });
   }
 
+  /** 매수/매도 체결을 ROOT/bot_trades_log.csv에 누적 기록(브라우저 개발 모드는 파일시스템이 없어 조용히 스킵) */
+  private logTrade(entry: BotTradeLogEntry): void {
+    if (!isTauri()) return;
+    void invoke("log_bot_trade", { entry }).catch(() => {
+      // 로그 기록 실패는 매매 자체를 막지 않는다
+    });
+  }
+
+  /** 보유 중 시장 스냅샷을 ROOT/bot_market_log.csv에 누적 기록 — trade_id로 거래 결과와 조인해 분석한다 */
+  private logMarketSnapshot(entry: BotMarketLogEntry): void {
+    if (!isTauri()) return;
+    void invoke("log_market_snapshot", { entry }).catch(() => {
+      // 로그 기록 실패는 매매 자체를 막지 않는다
+    });
+  }
+
+  /** KST 날짜가 바뀌면 일일 손실 집계와 매수 중단 플래그를 리셋 */
+  private rolloverDailyIfNeeded(now: number): void {
+    const key = kstDateKey(now);
+    if (key === this.dailyKey) return;
+    this.dailyKey = key;
+    this.dailyPnlKrw = 0;
+    this.buyHaltedByDailyLoss = false;
+  }
+
+  /** 매도 실현손익을 반영해 일일 손실 한도/최대 낙폭(MDD)을 판정 — 매도 자체는 막지 않고 신규 매수만 제한/정지시킨다 */
+  private recordRealizedPnl(realized: number, now: number): void {
+    this.rolloverDailyIfNeeded(now);
+    this.dailyPnlKrw += realized;
+    this.cumulativeRealizedKrw += realized;
+    this.equityPeakKrw = Math.max(this.equityPeakKrw, this.cumulativeRealizedKrw);
+
+    if (!this.buyHaltedByDailyLoss && this.dailyPnlKrw <= -this.config.dailyLossLimitKrw) {
+      this.buyHaltedByDailyLoss = true;
+      bus.emit(EV.TOAST, `🛑 오늘 손실이 ${krw(this.config.dailyLossLimitKrw)}을 넘어 신규 매수를 중단했어요`, "bad");
+    }
+
+    const drawdown = this.equityPeakKrw - this.cumulativeRealizedKrw;
+    if (this.enabled && drawdown >= this.config.maxDrawdownKrw) {
+      bus.emit(EV.TOAST, `🛑 누적 낙폭이 ${krw(this.config.maxDrawdownKrw)}을 넘어 매수봇을 정지했어요`, "bad");
+      this.setEnabled(false);
+    }
+  }
+
+  /** 실거래 주문/체결조회 실패 연속 횟수를 집계 — 한도 초과 시 엔진 전체를 정지 */
+  private registerApiError(): void {
+    this.consecutiveApiErrors += 1;
+    if (this.enabled && this.consecutiveApiErrors >= this.config.maxConsecutiveApiErrors) {
+      bus.emit(EV.TOAST, `🛑 API 오류가 ${this.consecutiveApiErrors}회 연속 발생해 매수봇을 정지했어요`, "bad");
+      this.setEnabled(false);
+      this.consecutiveApiErrors = 0;
+    }
+  }
+
   private patchBot(id: string, patch: Partial<TradeBot>): void {
     this.bots = this.bots.map((b) => (b.id === id ? { ...b, ...patch } : b));
     saveRoster(this.bots);
@@ -290,6 +428,12 @@ class BotEngine {
       return;
     }
 
+    if (this.buyHaltedByDailyLoss) {
+      this.patchBot(botId, { state: "scanning", lastMessage: "일일 손실 한도로 매수 중단" });
+      this.inFlight.delete(botId);
+      return;
+    }
+
     this.patchBot(botId, {
       state: "buying",
       targetMarket: market,
@@ -297,6 +441,11 @@ class BotEngine {
       lastMessage: `${market} 매수 시도...`,
       lastActionAt: Date.now(),
     });
+
+    // 동일 시도에 대해 고정된 identifier — 업비트 측에서 같은 identifier 재요청을 중복 주문으로 거부하게 한다
+    const orderIdentifier = `bot-${bot.id}-buy-${uid()}`;
+    // 이 거래(매수~매도) 전체를 식별 — bot_trades_log.csv/bot_market_log.csv 조인 키로 쓴다
+    const tradeId = uid();
 
     void (async () => {
       try {
@@ -307,10 +456,13 @@ class BotEngine {
           const price = this.getCurrentPrice(market);
           if (price && price > 0) {
             entryPrice = price;
-            volume = (this.config.budgetKrw * (1 - this.config.feeRate)) / price;
+            volume = (bot.settings.budgetKrw * (1 - this.config.feeRate)) / price;
           }
         } else {
-          await placeOrder({ market, side: "bid", ord_type: "price", price: String(this.config.budgetKrw) }, false);
+          await placeOrder(
+            { market, side: "bid", ord_type: "price", price: String(bot.settings.budgetKrw), identifier: orderIdentifier },
+            false
+          );
           const currency = market.replace("KRW-", "");
           for (let i = 0; i < FILL_POLL_TRIES; i += 1) {
             await sleep(1000);
@@ -329,10 +481,13 @@ class BotEngine {
         }
 
         if (!entryPrice || !volume || entryPrice <= 0 || volume <= 0) {
+          if (store.mode === "real") this.registerApiError();
           this.patchBot(botId, { state: "error", lastMessage: "체결 수량 확인 실패", lastActionAt: Date.now() });
           bus.emit(EV.TOAST, `🤖 ${bot.name}: ${market} 체결 수량 확인 실패`, "bad");
           return;
         }
+
+        if (store.mode === "real") this.consecutiveApiErrors = 0;
 
         this.patchBot(botId, {
           state: "holding",
@@ -340,13 +495,33 @@ class BotEngine {
           targetNameKo: nameKo,
           entryPrice,
           volume,
-          investedKrw: this.config.budgetKrw,
+          investedKrw: bot.settings.budgetKrw,
+          peakPriceSinceEntry: entryPrice,
+          tradeId,
+          lastMarketLogAt: Date.now(),
           currentPnlRate: 0,
           lastMessage: `${nameKo ?? market} 매수!`,
           lastActionAt: Date.now(),
         });
         bus.emit(EV.TOAST, `🤖 ${bot.name} → ${nameKo ?? market} ${store.mode === "sim" ? "[모의] " : ""}매수`, "good");
+        this.logTrade({
+          timestamp: new Date().toISOString(),
+          trade_id: tradeId,
+          bot_id: bot.id,
+          bot_name: bot.name,
+          action: "buy",
+          market,
+          name_ko: nameKo,
+          mode: store.mode,
+          price: entryPrice,
+          volume,
+          invested_krw: bot.settings.budgetKrw,
+          pnl_krw: null,
+          pnl_rate: null,
+          reason: "buy",
+        });
       } catch (err) {
+        if (store.mode === "real") this.registerApiError();
         this.patchBot(botId, { state: "error", lastMessage: `매수 오류: ${String(err)}`, lastActionAt: Date.now() });
         bus.emit(EV.TOAST, `🤖 ${bot.name}: 매수 오류`, "bad");
       } finally {
@@ -355,7 +530,12 @@ class BotEngine {
     })();
   }
 
-  private executeSell(bot: TradeBot, reason: "profit" | "loss", pnlRate: number): void {
+  private executeSell(
+    bot: TradeBot,
+    reason: "profit" | "loss" | "timeout" | "signal",
+    pnlRate: number,
+    detail?: string
+  ): void {
     const botId = bot.id;
     if (this.inFlight.has(botId)) return;
     const market = bot.targetMarket;
@@ -364,37 +544,75 @@ class BotEngine {
     if (!market || !volume || !entryPrice) return;
 
     this.inFlight.add(botId);
+    const startMessage =
+      reason === "timeout"
+        ? "세션 종료, 자동 매도 중..."
+        : reason === "signal"
+        ? "반전 신호 감지, 매도 중..."
+        : reason === "profit"
+        ? "익절 매도 중..."
+        : "손절 매도 중...";
     this.patchBot(botId, {
       state: "selling",
-      lastMessage: reason === "profit" ? "익절 매도 중..." : "손절 매도 중...",
+      lastMessage: startMessage,
       lastActionAt: Date.now(),
     });
+
+    // 익절/손절 매도는 리스크 방어 목적이므로 매수와 달리 일일 손실 한도로 막지 않는다
+    const orderIdentifier = `bot-${bot.id}-sell-${uid()}`;
 
     void (async () => {
       try {
         if (store.mode === "real") {
-          await placeOrder({ market, side: "ask", ord_type: "market", volume: String(volume) }, false);
+          await placeOrder(
+            { market, side: "ask", ord_type: "market", volume: String(volume), identifier: orderIdentifier },
+            false
+          );
         }
+        if (store.mode === "real") this.consecutiveApiErrors = 0;
 
         const currentPrice = this.getCurrentPrice(market) ?? entryPrice * (1 + pnlRate);
         const proceeds = currentPrice * volume * (1 - this.config.feeRate);
         const cost = entryPrice * volume * (1 + this.config.feeRate);
         const realized = proceeds - cost;
+        this.recordRealizedPnl(realized, Date.now());
 
+        // 상태는 실제 손익 부호로 정하고, reason은 매도 사유(익절/손절/세션종료/반전신호)로 따로 남긴다
+        const soldState = pnlRate >= 0 ? "sold_profit" : "sold_loss";
+        const reasonLabel =
+          reason === "timeout" ? "세션종료 매도" : reason === "signal" ? "반전신호 매도" : reason === "profit" ? "익절" : "손절";
+        const reasonEmoji = reason === "timeout" ? "⏰" : reason === "signal" ? "📉" : reason === "profit" ? "✨" : "💥";
         this.patchBot(botId, {
-          state: reason === "profit" ? "sold_profit" : "sold_loss",
+          state: soldState,
           currentPnlRate: pnlRate,
           realizedPnlKrw: bot.realizedPnlKrw + realized,
           tradesDone: bot.tradesDone + 1,
-          lastMessage: `${pnlRate >= 0 ? "+" : ""}${(pnlRate * 100).toFixed(1)}% ${reason === "profit" ? "익절!" : "손절!"}`,
+          lastMessage: `${pnlRate >= 0 ? "+" : ""}${(pnlRate * 100).toFixed(1)}% ${reasonLabel}!`,
           lastActionAt: Date.now(),
         });
         bus.emit(
           EV.TOAST,
-          `🤖 ${bot.name} ${bot.targetNameKo ?? market} ${reason === "profit" ? "✨ 익절" : "💥 손절"} (${(pnlRate * 100).toFixed(1)}%)`,
-          reason === "profit" ? "good" : "bad"
+          `🤖 ${bot.name} ${bot.targetNameKo ?? market} ${reasonEmoji} ${reasonLabel}${detail ? ` (${detail})` : ""} (${(pnlRate * 100).toFixed(1)}%)`,
+          pnlRate >= 0 ? "good" : "bad"
         );
+        this.logTrade({
+          timestamp: new Date().toISOString(),
+          trade_id: bot.tradeId ?? "",
+          bot_id: bot.id,
+          bot_name: bot.name,
+          action: "sell",
+          market,
+          name_ko: bot.targetNameKo,
+          mode: store.mode,
+          price: currentPrice,
+          volume,
+          invested_krw: bot.investedKrw,
+          pnl_krw: realized,
+          pnl_rate: pnlRate,
+          reason,
+        });
       } catch (err) {
+        if (store.mode === "real") this.registerApiError();
         this.patchBot(botId, { state: "error", lastMessage: `매도 오류: ${String(err)}`, lastActionAt: Date.now() });
         bus.emit(EV.TOAST, `🤖 ${bot.name}: 매도 오류`, "bad");
       } finally {
@@ -403,12 +621,18 @@ class BotEngine {
     })();
   }
 
+  /** 이 봇의 동작 시간대(스캔 창)가 지금 활성인지 — 수동 스캔은 모든 봇에 공통으로 강제 적용된다 */
+  private isBotActive(bot: TradeBot, manualActive: boolean, now: number): boolean {
+    return manualActive || isWithinDailyScanWindow(bot.settings.scanWindow, now);
+  }
+
   private runTick(): void {
     const now = Date.now();
+    this.rolloverDailyIfNeeded(now);
     const manualActive = this.manualScanUntil !== null && now < this.manualScanUntil;
-    const active = manualActive || isWithinDailyScanWindow(this.config, now);
-    this.scanActive = active;
-    if (active) this.lastScanAt = now;
+    const anyActive = manualActive || this.bots.some((b) => isWithinDailyScanWindow(b.settings.scanWindow, now));
+    this.scanActive = anyActive;
+    if (anyActive) this.lastScanAt = now;
 
     if (isTauri() && !this.tradeStreamStarted) void this.ensureTradeStream();
     this.updateHistory(now);
@@ -417,6 +641,7 @@ class BotEngine {
     let changed = false;
 
     const nextBots = current.map((bot) => {
+      const active = this.isBotActive(bot, manualActive, now);
       switch (bot.state) {
         case "idle":
           if (active) {
@@ -435,8 +660,40 @@ class BotEngine {
           const price = this.getCurrentPrice(bot.targetMarket);
           if (!price) return bot;
           const pnl = (price * (1 - this.config.feeRate) - bot.entryPrice * (1 + this.config.feeRate)) / bot.entryPrice;
+          const peakPriceSinceEntry = Math.max(bot.peakPriceSinceEntry ?? bot.entryPrice, price);
           changed = true;
-          return { ...bot, currentPnlRate: pnl };
+
+          const logInterval = MARKET_LOG_INTERVAL_MS[bot.settings.botType];
+          const dueForLog = !bot.lastMarketLogAt || now - bot.lastMarketLogAt >= logInterval;
+          if (dueForLog && bot.tradeId) {
+            const collapse = scoreCollapse({
+              peakPrice: peakPriceSinceEntry,
+              currentPrice: price,
+              history: this.history[bot.targetMarket],
+              now,
+            });
+            this.logMarketSnapshot({
+              timestamp: new Date(now).toISOString(),
+              trade_id: bot.tradeId,
+              bot_id: bot.id,
+              bot_name: bot.name,
+              market: bot.targetMarket,
+              mode: store.mode,
+              price,
+              pnl_rate: pnl,
+              trade_value_accel: collapse.tradeValueAccel,
+              bid_ratio: collapse.bidRatio,
+              collapse_score: collapse.score,
+              retracement: collapse.retracement,
+            });
+          }
+
+          return {
+            ...bot,
+            currentPnlRate: pnl,
+            peakPriceSinceEntry,
+            lastMarketLogAt: dueForLog ? now : bot.lastMarketLogAt,
+          };
         }
         case "sold_profit":
         case "sold_loss":
@@ -450,6 +707,9 @@ class BotEngine {
               entryPrice: null,
               volume: null,
               investedKrw: 0,
+              peakPriceSinceEntry: null,
+              tradeId: null,
+              lastMarketLogAt: null,
               currentPnlRate: null,
               lastMessage: "대기 중",
             };
@@ -466,6 +726,9 @@ class BotEngine {
               entryPrice: null,
               volume: null,
               investedKrw: 0,
+              peakPriceSinceEntry: null,
+              tradeId: null,
+              lastMarketLogAt: null,
               currentPnlRate: null,
               lastMessage: "복구, 대기 중",
             };
@@ -488,12 +751,41 @@ class BotEngine {
       const price = this.getCurrentPrice(bot.targetMarket);
       if (!price) continue;
       const pnl = (price * (1 - this.config.feeRate) - bot.entryPrice * (1 + this.config.feeRate)) / bot.entryPrice;
-      if (pnl >= this.config.takeProfitRate) this.executeSell(bot, "profit", pnl);
-      else if (pnl <= -this.config.stopLossRate) this.executeSell(bot, "loss", pnl);
+
+      if (bot.settings.botType === "scalp") {
+        // 단타봇: 세션(스캔 창)이 끝나면 익절/손절 조건과 무관하게 강제 매도
+        if (now >= scanWindowEndMs(bot.settings.scanWindow, now)) {
+          this.executeSell(bot, "timeout", pnl);
+          continue;
+        }
+      } else {
+        // 장투봇: 매수 후 24시간이 지나기 전에는 익절/손절 조건을 무시하고 계속 보유
+        const heldMs = bot.lastActionAt ? now - bot.lastActionAt : 0;
+        if (heldMs < BOT_HOLD_LIMIT_MS) continue;
+      }
+
+      if (pnl >= bot.settings.takeProfitRate) {
+        this.executeSell(bot, "profit", pnl);
+        continue;
+      }
+      if (pnl <= -bot.settings.stopLossRate) {
+        this.executeSell(bot, "loss", pnl);
+        continue;
+      }
+
+      // 고정 익절/손절 사이에서도 붕괴 스코어(추세 반전 조짐)가 임계값을 넘으면 조기 매도
+      // (단타봇은 세션 중, 장투봇은 최소 24시간을 넘긴 뒤부터 — 위에서 이미 각자의 조건을 통과한 상태)
+      const collapse = scoreCollapse({
+        peakPrice: bot.peakPriceSinceEntry ?? bot.entryPrice,
+        currentPrice: price,
+        history: this.history[bot.targetMarket],
+        now,
+      });
+      if (collapse.score >= COLLAPSE_THRESHOLD) this.executeSell(bot, "signal", pnl, collapse.reasons[0]);
     }
 
-    // 급등 스캔 + 배정(3초 주기)
-    if (active && now - this.lastSurgeScan >= SURGE_SCAN_INTERVAL_MS) {
+    // 급등 스캔 + 배정(3초 주기) — 봇마다 동작 시간대가 다를 수 있어 배정 대상은 각자의 활성 여부로 다시 거른다
+    if (anyActive && now - this.lastSurgeScan >= SURGE_SCAN_INTERVAL_MS) {
       this.lastSurgeScan = now;
       const tickers = Array.from(investment.getMarkets().map((m) => investment.getTicker(m.market)).filter((t): t is NonNullable<typeof t> => !!t));
 
@@ -511,7 +803,11 @@ class BotEngine {
       });
 
       const availableBots = this.bots.filter(
-        (b) => (b.state === "scanning" || b.state === "idle") && !b.targetMarket && !this.inFlight.has(b.id)
+        (b) =>
+          (b.state === "scanning" || b.state === "idle") &&
+          !b.targetMarket &&
+          !this.inFlight.has(b.id) &&
+          this.isBotActive(b, manualActive, now)
       );
 
       let ci = 0;

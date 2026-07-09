@@ -140,6 +140,7 @@ function injectStyleOnce(): void {
     #botDock .bd-pnl { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
     #botDock .bd-pnl.up { color: #e5484d; }
     #botDock .bd-pnl.down { color: #3b82f6; }
+    #botDock .bd-settings { font-size: 9px; color: #8a5a33; line-height: 1.35; }
     #botDock .bd-foot { font-size: 9px; color: #8a5a33; }
   `;
   document.head.appendChild(style);
@@ -181,7 +182,7 @@ export function initBotDock(): void {
   ui.append(root);
 
   toggleBtn.addEventListener("click", () => botEngine.setEnabled(!botEngine.isEnabled()));
-  addBtn.addEventListener("click", () => botEngine.addBot());
+  addBtn.addEventListener("click", () => bus.emit(EV.OPEN_BOT_CREATE_MODAL));
   scanBtn.addEventListener("click", () => botEngine.triggerScanNow());
 
   function renderToggle(enabled: boolean): void {
@@ -228,11 +229,17 @@ export function initBotDock(): void {
       pnl.textContent = " ";
     }
 
+    const settings = document.createElement("div");
+    settings.className = "bd-settings";
+    const sw = bot.settings.scanWindow;
+    const pad2 = (n: number) => String(n).padStart(2, "0");
+    settings.textContent = `${krw(bot.settings.budgetKrw)} · ${pad2(sw.startHourKst)}:${pad2(sw.startMinute)}(${sw.durationMinutes}분) · +${(bot.settings.takeProfitRate * 100).toFixed(1)}%/-${(bot.settings.stopLossRate * 100).toFixed(1)}%`;
+
     const foot = document.createElement("div");
     foot.className = "bd-foot";
     foot.textContent = `누적 ${krw(bot.realizedPnlKrw)} · ${bot.tradesDone}건`;
 
-    card.append(remove, top, state, market, pnl, foot);
+    card.append(remove, top, state, market, pnl, settings, foot);
     return card;
   }
 
