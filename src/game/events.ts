@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+import type { ApiKeyProfileSummary } from "../api/upbit";
 import type { ClosedTrade, Payout, Position, Ticker } from "./types";
 
 /**
@@ -38,6 +39,8 @@ export const EV = {
   TRADING_BOARD_CLOSED: "trading-board-closed",
   /** (없음) 실계좌 API Key 입력 모달 열기 (저장된 키 없음/키 변경) */
   OPEN_KEY_MODAL: "open-key-modal",
+  /** (profiles: ApiKeyProfileSummary[]) 저장된 실계좌 프로필 선택 모달 열기 */
+  OPEN_PROFILE_MODAL: "open-profile-modal",
   /** (없음) 월드 → UI: 금고 출금 모달 열기 — 원하는 금액을 자유롭게 입력해 출금 */
   OPEN_WITHDRAW_MODAL: "open-withdraw-modal",
   /** (없음) UI → 월드: 출금 모달 닫힘 */
@@ -65,4 +68,4 @@ export const EV = {
 } as const;
 
 // 타입 참조 유지용 (페이로드 계약 문서화)
-export type { ClosedTrade, Payout, Position, Ticker };
+export type { ApiKeyProfileSummary, ClosedTrade, Payout, Position, Ticker };

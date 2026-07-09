@@ -1,10 +1,11 @@
 import {
-  connectAccount,
+  connectApiKeyProfile,
   fetchAccounts,
   fetchOrder,
-  hasSavedKeys,
+  listApiKeyProfiles,
   placeOrder,
-  saveApiKeys,
+  saveApiKeyProfile,
+  type ApiKeyProfileSummary,
   type OrderResult,
 } from "../api/upbit";
 import { loadGame, saveGame } from "../core/save";
@@ -119,25 +120,40 @@ class GameStore {
   }
 
   /**
-   * 암호화 저장된 API Key(upbitkey.enc) 기반 실계좌 연동.
-   * 저장된 키가 없으면 키 입력 모달을 열고, 실패 시 HUD의 재연동 버튼으로 재시도한다.
+   * 암호화 저장된 API Key 프로필 기반 실계좌 연동.
+   * 저장된 프로필이 없으면 키 입력 모달을 열고, 있으면 프로필 선택 모달을 먼저 띄운다.
    * 성공 시 저장된 포지션을 실제 코인 잔고와 대조해 어긋난 수량을 보정한다.
    */
   async connect(): Promise<boolean> {
     if (this.mode !== "real") return true;
-    if (!(await hasSavedKeys())) {
-      bus.emit(EV.CONNECT, "none");
-      bus.emit(EV.OPEN_KEY_MODAL);
-      return false;
-    }
-    bus.emit(EV.CONNECT, "connecting");
+    let profiles: ApiKeyProfileSummary[];
     try {
-      this.finishConnect(await connectAccount());
-      return true;
+      profiles = await listApiKeyProfiles();
     } catch (e) {
       this.connected = false;
       bus.emit(EV.CONNECT, "error", String(e));
       return false;
+    }
+    if (profiles.length === 0) {
+      bus.emit(EV.CONNECT, "none");
+      bus.emit(EV.OPEN_KEY_MODAL);
+      return false;
+    }
+    bus.emit(EV.CONNECT, "none");
+    bus.emit(EV.OPEN_PROFILE_MODAL, profiles);
+    return false;
+  }
+
+  /** 저장된 프로필 선택 모달에서 호출 — 선택한 프로필로 계좌를 연동한다. */
+  async connectWithProfile(profileId: string): Promise<void> {
+    if (this.mode !== "real") return;
+    bus.emit(EV.CONNECT, "connecting");
+    try {
+      this.finishConnect(await connectApiKeyProfile(profileId));
+    } catch (e) {
+      this.connected = false;
+      bus.emit(EV.CONNECT, "error", String(e));
+      throw e;
     }
   }
 
@@ -145,11 +161,11 @@ class GameStore {
    * 키 입력 모달에서 호출 — 키 검증(잔고 조회) 후 암호화 저장 + 연동.
    * 실패 시 예외를 다시 던져 모달이 오류 메시지를 표시하게 한다.
    */
-  async connectWithKeys(accessKey: string, secretKey: string): Promise<void> {
+  async connectWithKeys(nickname: string, accessKey: string, secretKey: string): Promise<void> {
     if (this.mode !== "real") return;
     bus.emit(EV.CONNECT, "connecting");
     try {
-      this.finishConnect(await saveApiKeys(accessKey, secretKey));
+      this.finishConnect(await saveApiKeyProfile(nickname, accessKey, secretKey));
     } catch (e) {
       this.connected = false;
       bus.emit(EV.CONNECT, "error", String(e));

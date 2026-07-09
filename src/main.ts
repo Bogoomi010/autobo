@@ -21,7 +21,7 @@ window.addEventListener("pointerdown", () => sfx.init(), { once: true });
 window.addEventListener("keydown", () => sfx.init(), { once: true });
 
 // 버튼/카드 호버 효과음 — 위임 리스너 1개로 전체 UI(HUD·모달) 커버
-const HOVER_SELECTOR = ".pixel-btn:not(:disabled), .mode-card, .cm-row";
+const HOVER_SELECTOR = ".pixel-btn:not(:disabled), .mode-card, .cm-row, .pm-row:not(:disabled)";
 window.addEventListener("mouseover", (e) => {
   const target = (e.target as HTMLElement).closest?.(HOVER_SELECTOR);
   if (!target) return;

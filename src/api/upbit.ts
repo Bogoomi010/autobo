@@ -189,6 +189,36 @@ export async function hasSavedKeys(): Promise<boolean> {
   return (await invoke("has_saved_keys")) as boolean;
 }
 
+export interface ApiKeyProfileSummary {
+  id: string;
+  nickname: string;
+  accessKeyHint: string;
+  updatedAt: number;
+}
+
+interface RawApiKeyProfileSummary {
+  id: string;
+  nickname: string;
+  access_key_hint: string;
+  updated_at: number;
+}
+
+function mapProfileSummary(raw: RawApiKeyProfileSummary): ApiKeyProfileSummary {
+  return {
+    id: raw.id,
+    nickname: raw.nickname,
+    accessKeyHint: raw.access_key_hint,
+    updatedAt: raw.updated_at,
+  };
+}
+
+/** 저장된 API Key 프로필 목록. 키 원문은 반환하지 않고 닉네임과 마스킹 힌트만 받는다. */
+export async function listApiKeyProfiles(): Promise<ApiKeyProfileSummary[]> {
+  if (!isTauri()) return [];
+  const raw = (await invoke("list_api_key_profiles")) as RawApiKeyProfileSummary[];
+  return raw.map(mapProfileSummary);
+}
+
 /**
  * 입력받은 API Key를 잔고 조회로 검증 → 암호화 저장(upbitkey.enc) + 세션 연동.
  * 잘못된 키는 저장되지 않고 예외를 던진다.
@@ -197,6 +227,26 @@ export async function saveApiKeys(accessKey: string, secretKey: string): Promise
   requireTauri();
   return mapAccounts(
     (await invoke("save_api_keys", { accessKey, secretKey })) as RawAccount[]
+  );
+}
+
+/** 프로필 닉네임과 API Key를 검증 후 암호화 저장하고 해당 프로필로 세션 연동한다. */
+export async function saveApiKeyProfile(
+  nickname: string,
+  accessKey: string,
+  secretKey: string
+): Promise<Account[]> {
+  requireTauri();
+  return mapAccounts(
+    (await invoke("save_api_key_profile", { nickname, accessKey, secretKey })) as RawAccount[]
+  );
+}
+
+/** 저장된 프로필 하나를 선택해 세션 연동한다. */
+export async function connectApiKeyProfile(profileId: string): Promise<Account[]> {
+  requireTauri();
+  return mapAccounts(
+    (await invoke("connect_api_key_profile", { profileId })) as RawAccount[]
   );
 }
 

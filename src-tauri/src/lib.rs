@@ -42,6 +42,31 @@ struct ApiKeys {
     secret_key: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ApiKeyProfile {
+    id: String,
+    nickname: String,
+    access_key: String,
+    secret_key: String,
+    created_at: u64,
+    updated_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ApiKeyProfileStore {
+    version: u8,
+    profiles: Vec<ApiKeyProfile>,
+    selected_profile_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ApiKeyProfileSummary {
+    id: String,
+    nickname: String,
+    access_key_hint: String,
+    updated_at: u64,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct OrderRequest {
     market: String,
@@ -383,6 +408,71 @@ fn encrypted_key_path() -> Result<PathBuf, String> {
     Ok(upbitkey_path()?.with_file_name("upbitkey.enc"))
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn default_profile_nickname() -> String {
+    "기본 프로필".to_string()
+}
+
+fn normalize_profile_nickname(nickname: &str) -> Result<String, String> {
+    let trimmed = nickname.trim();
+    if trimmed.is_empty() {
+        return Err("프로필 닉네임을 입력하세요.".to_string());
+    }
+    if trimmed.chars().count() > 24 {
+        return Err("프로필 닉네임은 24자 이하로 입력하세요.".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn mask_access_key(access_key: &str) -> String {
+    let trimmed = access_key.trim();
+    let total = trimmed.chars().count();
+    if total <= 4 {
+        return "****".to_string();
+    }
+    let tail = trimmed
+        .chars()
+        .skip(total.saturating_sub(4))
+        .collect::<String>();
+    format!("****{tail}")
+}
+
+fn profile_summary(profile: &ApiKeyProfile) -> ApiKeyProfileSummary {
+    ApiKeyProfileSummary {
+        id: profile.id.clone(),
+        nickname: profile.nickname.clone(),
+        access_key_hint: mask_access_key(&profile.access_key),
+        updated_at: profile.updated_at,
+    }
+}
+
+fn keys_to_profile(keys: ApiKeys, nickname: String) -> ApiKeyProfile {
+    let now = now_ms();
+    ApiKeyProfile {
+        id: Uuid::new_v4().to_string(),
+        nickname,
+        access_key: keys.access_key,
+        secret_key: keys.secret_key,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn profiles_from_legacy_keys(keys: ApiKeys) -> ApiKeyProfileStore {
+    let profile = keys_to_profile(keys, default_profile_nickname());
+    ApiKeyProfileStore {
+        selected_profile_id: Some(profile.id.clone()),
+        profiles: vec![profile],
+        version: 2,
+    }
+}
+
 /// 머신 종속 암호화 키 유도 — upbitkey.enc를 다른 PC로 복사해도 복호화되지 않는다.
 fn encryption_key() -> [u8; 32] {
     let computer = std::env::var("COMPUTERNAME").unwrap_or_default();
@@ -399,15 +489,12 @@ fn encryption_key() -> [u8; 32] {
     key
 }
 
-fn encrypt_keys(keys: &ApiKeys, encryption_key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    let plaintext =
-        serde_json::to_vec(keys).map_err(|error| format!("API Key 직렬화 실패: {error}"))?;
-
+fn encrypt_plaintext(plaintext: &[u8], encryption_key: &[u8; 32]) -> Result<Vec<u8>, String> {
     let cipher = Aes256Gcm::new_from_slice(encryption_key)
         .map_err(|_| "API Key 암호화 키 생성에 실패했습니다.".to_string())?;
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
     let ciphertext = cipher
-        .encrypt(&nonce, plaintext.as_slice())
+        .encrypt(&nonce, plaintext)
         .map_err(|_| "API Key 암호화에 실패했습니다.".to_string())?;
 
     let mut contents = Vec::with_capacity(KEY_FILE_MAGIC.len() + NONCE_LEN + ciphertext.len());
@@ -417,7 +504,23 @@ fn encrypt_keys(keys: &ApiKeys, encryption_key: &[u8; 32]) -> Result<Vec<u8>, St
     Ok(contents)
 }
 
-fn decrypt_keys(contents: &[u8], encryption_key: &[u8; 32]) -> Result<ApiKeys, String> {
+#[cfg(test)]
+fn encrypt_keys(keys: &ApiKeys, encryption_key: &[u8; 32]) -> Result<Vec<u8>, String> {
+    let plaintext =
+        serde_json::to_vec(keys).map_err(|error| format!("API Key 직렬화 실패: {error}"))?;
+    encrypt_plaintext(&plaintext, encryption_key)
+}
+
+fn encrypt_profile_store(
+    store: &ApiKeyProfileStore,
+    encryption_key: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    let plaintext = serde_json::to_vec(store)
+        .map_err(|error| format!("API Key 프로필 직렬화 실패: {error}"))?;
+    encrypt_plaintext(&plaintext, encryption_key)
+}
+
+fn decrypt_plaintext(contents: &[u8], encryption_key: &[u8; 32]) -> Result<Vec<u8>, String> {
     let payload = contents
         .strip_prefix(KEY_FILE_MAGIC)
         .ok_or_else(|| "upbitkey.enc 파일 형식이 올바르지 않습니다.".to_string())?;
@@ -434,36 +537,61 @@ fn decrypt_keys(contents: &[u8], encryption_key: &[u8; 32]) -> Result<ApiKeys, S
             "API Key 복호화에 실패했습니다. 키를 다시 입력하세요. (다른 PC에서 만든 파일은 사용할 수 없습니다)"
                 .to_string()
         })?;
+    Ok(plaintext)
+}
 
+#[cfg(test)]
+fn decrypt_keys(contents: &[u8], encryption_key: &[u8; 32]) -> Result<ApiKeys, String> {
+    let plaintext = decrypt_plaintext(contents, encryption_key)?;
     serde_json::from_slice::<ApiKeys>(&plaintext)
         .map_err(|_| "upbitkey.enc 내용이 올바르지 않습니다. 키를 다시 입력하세요.".to_string())
 }
 
-fn save_encrypted_keys(keys: &ApiKeys) -> Result<(), String> {
-    let contents = encrypt_keys(keys, &encryption_key())?;
-    fs::write(encrypted_key_path()?, contents)
-        .map_err(|error| format!("API Key 파일 저장 실패: {error}"))
+fn decrypt_profile_store(
+    contents: &[u8],
+    encryption_key: &[u8; 32],
+) -> Result<(ApiKeyProfileStore, bool), String> {
+    let plaintext = decrypt_plaintext(contents, encryption_key)?;
+    if let Ok(store) = serde_json::from_slice::<ApiKeyProfileStore>(&plaintext) {
+        return Ok((store, false));
+    }
+    let keys = serde_json::from_slice::<ApiKeys>(&plaintext)
+        .map_err(|_| "upbitkey.enc 내용이 올바르지 않습니다. 키를 다시 입력하세요.".to_string())?;
+    Ok((profiles_from_legacy_keys(keys), true))
 }
 
-/// 저장된 키 로드 — 암호화 파일 우선, 없으면 기존 평문 upbitkey를 암호화 파일로 이전.
-fn load_saved_keys() -> Result<ApiKeys, String> {
+fn save_profile_store(store: &ApiKeyProfileStore) -> Result<(), String> {
+    let contents = encrypt_profile_store(store, &encryption_key())?;
+    fs::write(encrypted_key_path()?, contents)
+        .map_err(|error| format!("API Key 프로필 파일 저장 실패: {error}"))
+}
+
+fn load_profile_store() -> Result<ApiKeyProfileStore, String> {
     let encrypted_path = encrypted_key_path()?;
     if encrypted_path.exists() {
         let contents = fs::read(&encrypted_path)
             .map_err(|error| format!("upbitkey.enc 파일을 읽을 수 없습니다: {error}"))?;
-        return decrypt_keys(&contents, &encryption_key());
+        let (store, migrated) = decrypt_profile_store(&contents, &encryption_key())?;
+        if migrated {
+            save_profile_store(&store)?;
+        }
+        return Ok(store);
     }
 
     let legacy_path = upbitkey_path()?;
     if legacy_path.exists() {
-        let keys = load_upbitkey()?;
+        let store = profiles_from_legacy_keys(load_upbitkey()?);
         // 평문 키를 남기지 않는다 — 암호화 저장 성공 후에만 원본 제거
-        save_encrypted_keys(&keys)?;
+        save_profile_store(&store)?;
         let _ = fs::remove_file(&legacy_path);
-        return Ok(keys);
+        return Ok(store);
     }
 
-    Err("저장된 API Key가 없습니다. Access Key와 Secret Key를 입력하세요.".to_string())
+    Ok(ApiKeyProfileStore {
+        version: 2,
+        profiles: Vec::new(),
+        selected_profile_id: None,
+    })
 }
 
 fn order_query_string(order: &OrderRequest) -> String {
@@ -1166,18 +1294,24 @@ fn log_market_snapshot(entry: BotMarketLogEntry) -> Result<(), String> {
 
 #[tauri::command]
 fn has_saved_keys() -> bool {
-    encrypted_key_path()
-        .map(|path| path.exists())
+    load_profile_store()
+        .map(|store| !store.profiles.is_empty())
         .unwrap_or(false)
-        || upbitkey_path().map(|path| path.exists()).unwrap_or(false)
 }
 
 #[tauri::command]
-async fn save_api_keys(
+fn list_api_key_profiles() -> Result<Vec<ApiKeyProfileSummary>, String> {
+    let store = load_profile_store()?;
+    Ok(store.profiles.iter().map(profile_summary).collect())
+}
+
+async fn save_profile_and_connect(
+    nickname: String,
     access_key: String,
     secret_key: String,
     session_keys: tauri::State<'_, SessionApiKeys>,
 ) -> Result<Value, String> {
+    let nickname = normalize_profile_nickname(&nickname)?;
     let keys = ApiKeys {
         access_key: access_key.trim().to_string(),
         secret_key: secret_key.trim().to_string(),
@@ -1188,7 +1322,93 @@ async fn save_api_keys(
 
     // 잔고 조회로 키 유효성을 먼저 검증 — 잘못된 키는 저장하지 않는다
     let accounts = fetch_accounts(&keys).await?;
-    save_encrypted_keys(&keys)?;
+
+    let mut store = load_profile_store()?;
+    let now = now_ms();
+    let selected_profile_id =
+        if let Some(profile) = store.profiles.iter_mut().find(|profile| profile.nickname == nickname)
+        {
+            profile.access_key = keys.access_key.clone();
+            profile.secret_key = keys.secret_key.clone();
+            profile.updated_at = now;
+            profile.id.clone()
+        } else {
+            let profile = ApiKeyProfile {
+                id: Uuid::new_v4().to_string(),
+                nickname,
+                access_key: keys.access_key.clone(),
+                secret_key: keys.secret_key.clone(),
+                created_at: now,
+                updated_at: now,
+            };
+            let id = profile.id.clone();
+            store.profiles.push(profile);
+            id
+        };
+
+    store.version = 2;
+    store.selected_profile_id = Some(selected_profile_id);
+    save_profile_store(&store)?;
+
+    let mut guard = session_keys
+        .lock()
+        .map_err(|_| "API Key 상태를 사용할 수 없습니다.".to_string())?;
+    *guard = Some(keys);
+
+    Ok(accounts)
+}
+
+#[tauri::command]
+async fn save_api_keys(
+    access_key: String,
+    secret_key: String,
+    session_keys: tauri::State<'_, SessionApiKeys>,
+) -> Result<Value, String> {
+    save_profile_and_connect(
+        default_profile_nickname(),
+        access_key,
+        secret_key,
+        session_keys,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn save_api_key_profile(
+    nickname: String,
+    access_key: String,
+    secret_key: String,
+    session_keys: tauri::State<'_, SessionApiKeys>,
+) -> Result<Value, String> {
+    save_profile_and_connect(nickname, access_key, secret_key, session_keys).await
+}
+
+#[tauri::command]
+async fn connect_api_key_profile(
+    profile_id: Option<String>,
+    session_keys: tauri::State<'_, SessionApiKeys>,
+) -> Result<Value, String> {
+    let mut store = load_profile_store()?;
+    let selected_id = profile_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .or_else(|| store.selected_profile_id.clone());
+
+    let profile = selected_id
+        .as_ref()
+        .and_then(|id| store.profiles.iter().find(|profile| &profile.id == id))
+        .or_else(|| store.profiles.first())
+        .cloned()
+        .ok_or_else(|| "저장된 API Key 프로필이 없습니다. 새 프로필을 입력하세요.".to_string())?;
+
+    let keys = ApiKeys {
+        access_key: profile.access_key.clone(),
+        secret_key: profile.secret_key.clone(),
+    };
+    let accounts = fetch_accounts(&keys).await?;
+
+    store.selected_profile_id = Some(profile.id);
+    save_profile_store(&store)?;
 
     let mut guard = session_keys
         .lock()
@@ -1202,15 +1422,7 @@ async fn save_api_keys(
 async fn connect_upbitkey_account(
     session_keys: tauri::State<'_, SessionApiKeys>,
 ) -> Result<Value, String> {
-    let keys = load_saved_keys()?;
-    let accounts = fetch_accounts(&keys).await?;
-
-    let mut guard = session_keys
-        .lock()
-        .map_err(|_| "API Key 상태를 사용할 수 없습니다.".to_string())?;
-    *guard = Some(keys);
-
-    Ok(accounts)
+    connect_api_key_profile(None, session_keys).await
 }
 
 #[tauri::command]
@@ -1370,9 +1582,12 @@ pub fn run() {
             start_board_trade_stream,
             stop_board_trade_stream,
             has_saved_keys,
+            list_api_key_profiles,
             log_bot_trade,
             log_market_snapshot,
             save_api_keys,
+            save_api_key_profile,
+            connect_api_key_profile,
             connect_upbitkey_account,
             get_session_accounts,
             get_order_chance,

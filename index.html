@@ -831,6 +831,95 @@
       }
       #keyModal .km-actions .pixel-btn { flex: 1; }
 
+      /* API Key 프로필 선택 모달 ----------------------------------------- */
+      #profileModal {
+        position: absolute;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(26, 20, 16, 0.68);
+        pointer-events: auto;
+        z-index: 91;
+      }
+      #profileModal.open { display: flex; }
+      #profileModal .pm-panel {
+        width: 440px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 20px 22px;
+      }
+      #profileModal .pm-title {
+        font-size: 19px;
+        color: var(--ink);
+      }
+      #profileModal .pm-desc {
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--wood);
+      }
+      #profileModal .pm-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-height: 260px;
+        overflow-y: auto;
+      }
+      #profileModal .pm-row {
+        font-family: var(--font);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        width: 100%;
+        color: var(--ink);
+        background: #fff;
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        padding: 10px 12px;
+        cursor: pointer;
+        text-align: left;
+        box-shadow: 0 3px 0 var(--ink);
+      }
+      #profileModal .pm-row:hover {
+        transform: translateY(1px);
+        box-shadow: 0 2px 0 var(--ink);
+      }
+      #profileModal .pm-row:disabled {
+        color: #8f836d;
+        background: #efe6d1;
+        cursor: default;
+        transform: none;
+        box-shadow: 0 3px 0 #7a6f5c;
+      }
+      #profileModal .pm-name {
+        font-size: 15px;
+        font-weight: 700;
+      }
+      #profileModal .pm-hint {
+        flex: 0 0 auto;
+        font-size: 12px;
+        color: var(--wood);
+        font-variant-numeric: tabular-nums;
+      }
+      #profileModal .pm-error {
+        display: none;
+        font-size: 12px;
+        color: var(--up);
+        background: #fdeeee;
+        border: 3px solid var(--up);
+        border-radius: 2px;
+        padding: 8px 10px;
+      }
+      #profileModal .pm-error.on { display: block; }
+      #profileModal .pm-actions {
+        display: flex;
+        gap: 10px;
+        margin-top: 2px;
+      }
+      #profileModal .pm-actions .pixel-btn { flex: 1; }
+
       /* 매수봇 생성 모달 ---------------------------------------------------- */
       #botCreateModal {
         position: absolute;
