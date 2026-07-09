@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 import type { ApiKeyProfileSummary } from "../api/upbit";
-import type { ClosedTrade, Payout, Position, Ticker } from "./types";
+import type { ClosedTrade, Payout, Position, Ticker, WalletHolding } from "./types";
 
 /**
  * 전역 이벤트 버스 — Scene(월드) ↔ DOM UI ↔ 시스템 간 통신은 전부 여기를 거친다.
@@ -16,6 +16,8 @@ export const EV = {
   CARRY: "carry-changed",
   /** (positions: Position[]) 열린 포지션 목록 변경 */
   POSITIONS: "positions-changed",
+  /** (holdings: WalletHolding[]) 실계좌 지갑에 이미 있던 코인 보유분 변경 */
+  WALLET_HOLDINGS: "wallet-holdings-changed",
   /** (trade: ClosedTrade, payout: Payout) 자동 익절/손절 체결 완료 */
   TRADE_CLOSED: "trade-closed",
   /** (payouts: Payout[]) 바닥에 놓인 돈뭉치 목록 변경 */
@@ -68,4 +70,4 @@ export const EV = {
 } as const;
 
 // 타입 참조 유지용 (페이로드 계약 문서화)
-export type { ApiKeyProfileSummary, ClosedTrade, Payout, Position, Ticker };
+export type { ApiKeyProfileSummary, ClosedTrade, Payout, Position, Ticker, WalletHolding };

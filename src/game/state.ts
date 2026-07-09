@@ -16,7 +16,7 @@ import {
   TRADE_LOG_MAX,
 } from "./config";
 import { bus, EV } from "./events";
-import type { Account, ClosedTrade, CoinInfo, Payout, Position, SaveData, Ticker } from "./types";
+import type { Account, ClosedTrade, CoinInfo, Payout, Position, SaveData, Ticker, WalletHolding } from "./types";
 
 let seq = 0;
 function uid(prefix: string): string {
@@ -59,12 +59,14 @@ class GameStore {
 
   carried = 0;
   positions: Position[] = [];
+  walletHoldings: WalletHolding[] = [];
   payouts: Payout[] = [];
   trades: ClosedTrade[] = [];
 
   /** 실거래: 계좌의 주문 가능 KRW / 모의: 가상 잔고 */
   private accountKrw = 0;
   private simBalance = SIM_START_BALANCE;
+  private coinNameBySymbol = new Map<string, string>();
 
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -86,10 +88,16 @@ class GameStore {
       const current = t && p.entryPrice > 0 ? p.volume * t.price : p.investedKrw;
       return s + current;
     }, 0);
+    const walletHoldingsValue = this.walletHoldings.reduce((s, h) => {
+      const t = tickers?.get(h.market);
+      const current = t ? h.volume * t.price : h.investedKrw;
+      return s + current;
+    }, 0);
     return (
       this.vaultBalance() +
       this.carried +
       positionsValue +
+      walletHoldingsValue +
       this.payouts.reduce((s, p) => s + p.amount, 0)
     );
   }
@@ -97,6 +105,17 @@ class GameStore {
   /** 시작 시 모드 선택 창에서 확정 — init() 전에 반드시 1회 호출 */
   setMode(mode: "real" | "sim"): void {
     this.mode = mode;
+  }
+
+  /** 시세 시스템이 로드한 KRW 마켓 이름 캐시를 받아 지갑 보유 코인 표시명을 보강한다. */
+  setCoinCatalog(coins: CoinInfo[]): void {
+    this.coinNameBySymbol = new Map(coins.map((coin) => [coin.symbol, coin.nameKo]));
+    if (this.walletHoldings.length === 0) return;
+    this.walletHoldings = this.walletHoldings.map((holding) => ({
+      ...holding,
+      nameKo: this.coinNameBySymbol.get(holding.symbol) ?? holding.nameKo,
+    }));
+    bus.emit(EV.WALLET_HOLDINGS, this.walletHoldings);
   }
 
   /** 앱 시작 시 1회 — 세이브 로드 후 실계좌 연동(실거래 모드) */
@@ -177,6 +196,7 @@ class GameStore {
   private finishConnect(accounts: Account[]): void {
     this.applyAccounts(accounts);
     this.reconcilePositions(accounts);
+    this.syncWalletHoldings(accounts);
     this.connected = true;
     bus.emit(EV.CONNECT, "connected");
     this.broadcastAll();
@@ -186,7 +206,10 @@ class GameStore {
   async refreshAccounts(): Promise<void> {
     if (this.mode !== "real" || !this.connected) return;
     try {
-      this.applyAccounts(await fetchAccounts());
+      const accounts = await fetchAccounts();
+      this.applyAccounts(accounts);
+      this.reconcilePositions(accounts);
+      this.syncWalletHoldings(accounts);
       bus.emit(EV.WALLET, this.vaultBalance());
     } catch {
       // 일시 실패는 다음 갱신에서 복구 — 잔고 표시가 잠깐 낡을 뿐 자금엔 영향 없음
@@ -196,6 +219,49 @@ class GameStore {
   private applyAccounts(accounts: Account[]): void {
     const krw = accounts.find((a) => a.currency === "KRW");
     this.accountKrw = krw ? krw.balance : 0;
+  }
+
+  private syncWalletHoldings(accounts: Account[]): void {
+    if (this.mode !== "real") {
+      this.walletHoldings = [];
+      bus.emit(EV.WALLET_HOLDINGS, this.walletHoldings);
+      return;
+    }
+
+    const managedVolumeBySymbol = new Map<string, number>();
+    for (const position of this.positions) {
+      managedVolumeBySymbol.set(
+        position.symbol,
+        (managedVolumeBySymbol.get(position.symbol) ?? 0) + position.volume
+      );
+    }
+
+    this.walletHoldings = accounts
+      .filter((account) => account.currency !== "KRW")
+      .map((account) => {
+        const totalVolume = account.balance + account.locked;
+        const managedVolume = managedVolumeBySymbol.get(account.currency) ?? 0;
+        const externalVolume = Math.max(0, totalVolume - managedVolume);
+        return { account, externalVolume };
+      })
+      .filter(({ externalVolume }) => externalVolume > 0)
+      .map(({ account, externalVolume }) => {
+        const lockedRatio =
+          account.balance + account.locked > 0 ? externalVolume / (account.balance + account.locked) : 0;
+        const locked = Math.min(account.locked, account.locked * lockedRatio);
+        const balance = Math.max(0, externalVolume - locked);
+        return {
+          market: `KRW-${account.currency}`,
+          nameKo: this.coinNameBySymbol.get(account.currency) ?? account.currency,
+          symbol: account.currency,
+          balance,
+          locked,
+          volume: externalVolume,
+          avgBuyPrice: account.avgBuyPrice,
+          investedKrw: account.avgBuyPrice > 0 ? Math.round(externalVolume * account.avgBuyPrice) : 0,
+        };
+      });
+    bus.emit(EV.WALLET_HOLDINGS, this.walletHoldings);
   }
 
   /** 저장된 포지션 수량이 실제 코인 잔고보다 크면(외부 매도 등) 보정/제거 */
@@ -213,6 +279,7 @@ class GameStore {
     });
     if (this.positions.length !== before) {
       bus.emit(EV.TOAST, "외부에서 변동된 포지션을 정리했어요", "info");
+      bus.emit(EV.POSITIONS, this.positions);
       this.persist();
     }
   }
@@ -222,6 +289,7 @@ class GameStore {
     bus.emit(EV.WALLET, this.vaultBalance());
     bus.emit(EV.CARRY, this.carried);
     bus.emit(EV.POSITIONS, this.positions);
+    bus.emit(EV.WALLET_HOLDINGS, this.walletHoldings);
     bus.emit(EV.PAYOUTS, this.payouts);
   }
 

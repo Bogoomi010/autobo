@@ -44,6 +44,23 @@ export interface Position {
   openedAt: number;
 }
 
+/** 실계좌 지갑에 이미 들어 있던 코인 보유분. 앱 포지션과 달리 자동/수동 매도 대상이 아니다. */
+export interface WalletHolding {
+  market: string;
+  nameKo: string;
+  symbol: string;
+  /** 주문 가능 수량 */
+  balance: number;
+  /** 주문/출금 등으로 잠긴 수량 */
+  locked: number;
+  /** balance + locked */
+  volume: number;
+  /** 업비트 계좌 평균 매수가. 0이면 손익률 계산 불가 */
+  avgBuyPrice: number;
+  /** 평균 매수가 기준 평가 원금. avgBuyPrice가 0이면 0 */
+  investedKrw: number;
+}
+
 /** 청산된 거래 기록 */
 export interface ClosedTrade {
   market: string;

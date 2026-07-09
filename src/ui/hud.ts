@@ -9,13 +9,15 @@ import { STOP_LOSS_RATE, TAKE_PROFIT_RATE } from "../game/config";
 import { bus, EV } from "../game/events";
 import { krw, pct } from "../game/format";
 import { store } from "../game/state";
-import type { ClosedTrade, Position, Ticker } from "../game/types";
+import type { ClosedTrade, Position, Ticker, WalletHolding } from "../game/types";
 import { makeBadge, signClass } from "./uiKit";
 
 /** 최신 시세 캐시 (포지션 손익 재계산용) */
 let tickers = new Map<string, Ticker>();
 /** 최신 매수봇 목록 캐시 (봇이 투자 중인 코인을 "투자 현황"에도 같이 보여주기 위함) */
 let latestBots: TradeBot[] = [];
+/** 실계좌 지갑에 이미 있던 코인 보유분 캐시 */
+let latestWalletHoldings: WalletHolding[] = [];
 
 export function initHud(): void {
   const ui = document.getElementById("ui")!;
@@ -115,13 +117,14 @@ export function initHud(): void {
     totalEl.val.textContent = krw(store.totalAssets(tickers));
   }
 
-  /** 플레이어 포지션 + 매수봇이 보유 중인 코인을 한 목록에 같이 그린다 */
+  /** 플레이어 포지션 + 지갑 보유 코인 + 매수봇 보유 코인을 한 목록에 같이 그린다 */
   function renderInvestments(): void {
     const positions = store.positions;
+    const walletHoldings = latestWalletHoldings;
     const botHoldings = latestBots.filter((b) => (b.state === "holding" || b.state === "selling") && b.targetMarket);
 
     posList.replaceChildren();
-    if (positions.length === 0 && botHoldings.length === 0) {
+    if (positions.length === 0 && walletHoldings.length === 0 && botHoldings.length === 0) {
       posList.append(
         el("div", "empty", { html: "투자 중인 코인이<br>없어요 🪙" })
       );
@@ -129,6 +132,7 @@ export function initHud(): void {
       return;
     }
     for (const p of positions) posList.append(posCard(p));
+    for (const h of walletHoldings) posList.append(walletHoldingCard(h));
     for (const b of botHoldings) posList.append(botPosCard(b));
     renderTotal();
   }
@@ -168,6 +172,7 @@ export function initHud(): void {
   // ── 초기 렌더 (store 직접 읽기) ────────────────────────────
   renderWallet(store.vaultBalance());
   renderCarry(store.carried);
+  latestWalletHoldings = store.walletHoldings;
   latestBots = botEngine.getBots();
   renderInvestments();
   renderTrades(store.trades);
@@ -183,6 +188,10 @@ export function initHud(): void {
     renderTotal();
   });
   bus.on(EV.POSITIONS, () => renderInvestments());
+  bus.on(EV.WALLET_HOLDINGS, (holdings: WalletHolding[]) => {
+    latestWalletHoldings = holdings;
+    renderInvestments();
+  });
   bus.on(EV.BOTS_CHANGED, (bots: TradeBot[]) => {
     latestBots = bots;
     renderInvestments();
@@ -297,6 +306,44 @@ function posCard(p: Position): HTMLElement {
   return card;
 }
 
+/** 실계좌 지갑에 이미 있던 보유 코인 카드 — 앱 포지션이 아니므로 매도 버튼은 제공하지 않는다 */
+function walletHoldingCard(holding: WalletHolding): HTMLElement {
+  const card = el("div", "pos-card wallet");
+  card.dataset.kind = "wallet";
+  card.dataset.market = holding.market;
+  card.dataset.entry = String(holding.avgBuyPrice);
+  card.dataset.status = "open";
+
+  const top = el("div", "pos-top");
+  const badge = makeBadge(holding.symbol);
+  const name = el("div", "pos-name");
+  const amountText =
+    holding.investedKrw > 0
+      ? `지갑 ${krw(holding.investedKrw)}`
+      : `지갑 ${formatCoinVolume(holding.volume)} ${holding.symbol}`;
+  name.append(
+    el("span", "ko", { text: `💼 ${holding.nameKo}` }),
+    el("span", "amt", { text: amountText })
+  );
+  const pnl = el("div", "pos-pnl num", { text: "—" });
+  top.append(badge, name, pnl);
+
+  const gauge = el("div", "pos-gauge");
+  gauge.append(el("div", "mid"), el("div", "fill"));
+
+  card.append(top, gauge);
+
+  const t = tickers.get(holding.market);
+  if (t && holding.avgBuyPrice > 0) {
+    const rate = t.price / holding.avgBuyPrice - 1;
+    pnl.textContent = pct(rate);
+    pnl.className = `pos-pnl num ${signClass(rate)}`;
+    applyGauge(gauge.querySelector<HTMLElement>(".fill")!, rate);
+  }
+
+  return card;
+}
+
 /** 매수봇이 보유 중인 코인 카드 — 플레이어 포지션과 같은 목록에 같이 그린다(매도 버튼 없음, 봇 상세는 월드 로봇 클릭으로) */
 function botPosCard(bot: TradeBot): HTMLElement {
   const card = el("div", "pos-card bot");
@@ -331,6 +378,12 @@ function botPosCard(bot: TradeBot): HTMLElement {
     applyGauge(gauge.querySelector<HTMLElement>(".fill")!, bot.currentPnlRate, bot.settings.takeProfitRate, bot.settings.stopLossRate);
   }
   return card;
+}
+
+function formatCoinVolume(volume: number): string {
+  return volume.toLocaleString("ko-KR", {
+    maximumFractionDigits: 8,
+  });
 }
 
 /** 청산 사유별 표시(이모지/문구/good 여부) — good은 사유가 아니라 실제 손익 부호로 정한다 */

@@ -42,6 +42,7 @@ class InvestmentSystem {
   private async bootstrap(): Promise<void> {
     try {
       this.markets = await fetchMarkets();
+      store.setCoinCatalog(this.markets);
       this.setApiStatus(true);
       this.scheduleNext(0);
     } catch {
