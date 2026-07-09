@@ -8,7 +8,7 @@
 import Phaser from "phaser";
 import { botEngine } from "../bots/botEngine";
 import {
-  BOT_STATE_LABEL,
+  botStateLabel,
   botTier,
   botTypeIcon,
   formatBotFootLine,
@@ -60,6 +60,7 @@ function slot(index: number): { x: number; y: number } {
 /** 상태 표시등 색 — 보유 중엔 현재 손익 부호(업비트 관례: 상승=빨강/하락=파랑)를 그대로 반영 */
 function lightColor(bot: TradeBot): number {
   const state: BotState = bot.state;
+  if (!bot.enabled && state !== "holding" && state !== "selling") return 0xb0a488;
   switch (state) {
     case "idle":
       return 0xb0a488;
@@ -84,6 +85,7 @@ interface BotRec {
   desk: Phaser.GameObjects.Image;
   robot: Phaser.GameObjects.Sprite;
   light: Phaser.GameObjects.Image;
+  pnlLabel: Phaser.GameObjects.Text;
   blinkTween: Phaser.Tweens.Tween | null;
   robotX: number;
   robotY: number;
@@ -254,6 +256,18 @@ export class BotFloor {
       .setInteractive({ useHandCursor: true });
     robot.play("bot-working");
     const light = this.scene.add.image(robotX + 2, robotY - 36, "status_dot").setDepth(20000);
+    const pnlLabel = this.scene.add
+      .text(robotX, robotY - 54, "", {
+        fontFamily: KO_FONT,
+        fontSize: "10px",
+        fontStyle: "bold",
+        color: UP,
+        stroke: DARK,
+        strokeThickness: 3,
+      })
+      .setOrigin(0.5, 1)
+      .setDepth(20002)
+      .setVisible(false);
 
     robot.on("pointerover", () => {
       sfx.botHover();
@@ -269,11 +283,20 @@ export class BotFloor {
       bus.emit(EV.OPEN_BOT_DETAIL, bot.id);
     });
 
-    return { desk, robot, light, blinkTween: null, robotX, robotY, deskX: x, deskY: y, tier: 0 };
+    return { desk, robot, light, pnlLabel, blinkTween: null, robotX, robotY, deskX: x, deskY: y, tier: 0 };
   }
 
   private updateRec(rec: BotRec, bot: TradeBot): void {
     rec.light.setTint(lightColor(bot));
+    rec.robot.setAlpha(bot.enabled || bot.state === "holding" || bot.state === "selling" ? 1 : 0.62);
+
+    const showPnl = (bot.state === "holding" || bot.state === "selling") && bot.currentPnlRate !== null;
+    if (showPnl) {
+      const rate = bot.currentPnlRate ?? 0;
+      const label = rate > 0 ? "수익" : rate < 0 ? "손실" : "수익률";
+      rec.pnlLabel.setText(`${label} ${formatBotPnl(bot)}`).setColor(rate > 0 ? UP : rate < 0 ? DOWN : DARK);
+    }
+    rec.pnlLabel.setVisible(showPnl);
 
     const shouldBlink = isBotBusyState(bot.state);
     if (shouldBlink && !rec.blinkTween) {
@@ -352,6 +375,7 @@ export class BotFloor {
     rec.desk.destroy();
     rec.robot.destroy();
     rec.light.destroy();
+    rec.pnlLabel.destroy();
   }
 
   private showTooltip(botId: string): void {
@@ -362,7 +386,7 @@ export class BotFloor {
     this.tooltipIconBg.setFillStyle(badgeColorHex(bot.name));
     this.tooltipIconText.setText(botTypeIcon(bot.settings.botType));
     this.tooltipName.setText(bot.name);
-    this.tooltipState.setText(BOT_STATE_LABEL[bot.state]).setColor(isBotBusyState(bot.state) ? AMBER : DARK);
+    this.tooltipState.setText(botStateLabel(bot)).setColor(isBotBusyState(bot.state) ? AMBER : DARK);
 
     this.tooltipTier.setText(`등급 ${botTier(bot).label}`);
 

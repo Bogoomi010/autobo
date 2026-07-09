@@ -29,7 +29,7 @@ idle → scanning → targeting → buying → holding → selling → sold_prof
 
 포지션(진입가/수량 등 "지금 이 순간의 보유 상태")은 앱 재시작 시 초기화된다 — 재시작 시점의
 실제 시세와 괴리될 위험이 있어 의도적으로 복원하지 않는다. 반면 "쌓이는 데이터"인 누적
-실현손익(`realizedPnlKrw`)·거래 횟수(`tradesDone`)·활동 로그(`logs`)는 명단(`id`/`name`/`settings`)과
+실현손익(`realizedPnlKrw`)·거래 횟수(`tradesDone`)·활동 로그(`logs`)·개별 운용 여부(`enabled`)는 명단(`id`/`name`/`settings`)과
 함께 매 변경마다 그대로 저장돼(`localStorage` 키 `coin_office_bots_roster`) 앱을 언제 종료해도
 잃지 않는다. 재시작 후에는 봇이 `idle`로 돌아가 있지만 누적 지표와 로그는 이어진다.
 
@@ -38,13 +38,13 @@ idle → scanning → targeting → buying → holding → selling → sold_prof
 왼쪽 방 매수봇 로봇을 클릭했을 때 뜨는 상세 패널(`botDetailModal.ts`)에서 "어떻게 투자했는지"를
 바로 훑어보는 용도다.
 
-### 1.1 원금 상한과 수익 처리
+### 1.1 원금 범위와 수익 처리
 
-1회 매수 예산(`BotSettings.budgetKrw`)은 `BOT_MAX_BUDGET_KRW`(2,000원)를 넘을 수 없다 —
-생성 창(`botCreateModal.ts`)에서 막고, 명단을 불러올 때(`clampSettings`)와 실제 주문을 넣는
-순간(`executeBuy`) 양쪽에서 다시 클램프해 예전에 저장된 더 큰 예산도 안전하게 낮춘다.
-(참고: 업비트 실거래 최소 주문금액은 5,000원이라 이 원금으로는 실거래 모드에서 주문이 거부될 수
-있다 — 지금은 모의 모드로 데이터를 쌓는 단계라 의도적으로 낮게 잡았다.)
+1회 매수 예산(`BotSettings.budgetKrw`)은 업비트 KRW 마켓 최소 주문금액에 맞춘
+`BOT_MIN_BUDGET_KRW`(5,000원)부터 앱 안전 상한 `BOT_MAX_BUDGET_KRW`(100,000원)까지 설정한다.
+생성 창(`botCreateModal.ts`), 명단 로드(`clampSettings`), 실제 주문 직전(`executeBuy`)에 같은 범위를
+적용한다. 기존 저장 봇의 예산이 5,000원 미만이면 5,000원으로 마이그레이션하되, 주문액이 사용자
+확인 없이 증가한 채 실행되지 않도록 해당 봇을 `enabled=false`로 불러온다.
 
 원금은 매 라운드 그대로 재사용하고(=봇 실적에 따라 커지지 않음), 수익은 매도 성공 즉시
 플레이어의 금고로 들어간다:
@@ -56,6 +56,15 @@ idle → scanning → targeting → buying → holding → selling → sold_prof
   `executeBuy`/`executeSell` 양쪽에서 `store.refreshAccounts()`를 호출해 금고 표시(계좌 조회값)만
   바로 갱신한다.
 
+### 1.2 개별 시작/중지와 월드 표시
+
+각 로봇을 클릭하면 상세 패널에서 해당 봇만 시작하거나 중지할 수 있다(`setBotEnabled`). 개별 중지는
+**신규 매수만 차단**한다. 이미 `buying`/`holding`/`selling` 상태인 포지션은 방치하지 않고 기존
+익절·손절·기간 만료 규칙으로 계속 감시하고 청산한다. 전체 on/off는 별도의 엔진 킬스위치로 유지한다.
+
+`holding` 또는 `selling` 상태이면서 `currentPnlRate`가 있으면 로봇 머리 위에 현재 수익률을 표시한다.
+양수는 `수익 +N.NN%`(빨강), 음수는 `손실 -N.NN%`(파랑)로 나타낸다.
+
 ---
 
 ## 2. 봇 종류 — 단타봇 / 장투봇
@@ -65,14 +74,20 @@ idle → scanning → targeting → buying → holding → selling → sold_prof
 | | 단타봇(`scalp`) | 장투봇(`longterm`) |
 |---|---|---|
 | 매도 판정 시작 조건 | 세션(스캔 창) 안에서만 | 매수 후 최소 24시간(`BOT_HOLD_LIMIT_MS`) 경과 후 |
-| 세션/기간이 끝나면 | 보유 중이어도 강제 매도(`reason: "timeout"`) | 상한 없음(계속 보유 가능) |
+| 세션/기간이 끝나면 | 보유 중이어도 강제 매도(`reason: "timeout"`) | 설정한 최대 보유기간(1~30일)에 강제 매도(`reason: "timeout"`) |
 | 24시간 전 신호(TP/SL/붕괴 스코어) | 세션 중이면 그대로 반영 | 전부 무시하고 보유 |
 
-세션(스캔 창)은 `BotSettings.scanWindow`로 지정한다. 새로 생성하는 봇은 생성 시점부터 사용자가
+세션(스캔 창)은 `BotSettings.scanWindow`로 지정한다. 새로 생성하는 단타봇은 생성 시점부터 사용자가
 고른 지속시간까지의 **1회성 창**으로 저장된다(`startAt`/`endAt`, 30분 단위, 최대 24시간).
 구버전 저장 봇처럼 `startAt`/`endAt`이 없는 설정은 기존 KST 시작시각 + 지속시간(평일 반복) 방식으로
 계속 해석한다. 이 창은 **신규 매수 스캔**과(단타봇에 한해) **매도 판정 마감**을 동시에 규정한다.
-장투봇은 스캔 창을 매수 스캔에만 쓰고, 매도는 최소 24시간 규칙만 따른다.
+장투봇은 1일 단위로 1~30일을 설정한다. `startAt`/`endAt`은 신규 매수 스캔 기간으로 쓰며,
+`durationMinutes`는 매수 체결 시점부터 계산하는 한 거래의 최대 보유기간으로도 사용한다. 최소 24시간
+전에는 모든 청산 신호를 무시하고, 24시간 이후에는 익절·손절·붕괴 신호를 평가한다. 신호가 없더라도
+최대 보유기간에 도달하면 강제 매도한다.
+
+개별 중지된 봇을 다시 시작할 때 기존 `endAt`이 이미 지났다면, 같은 `durationMinutes`로 현재 시점부터
+새 스캔 창을 만든다.
 
 이름은 생성 순서대로 종류 구분 없이 A, B, C...를 붙인다 — 예: `단타봇A`, `장투봇B`,
 `단타봇C`. (`nextBotName`, `BOT_NAME_RE` 참고. 26개 초과 시 AA, AB... 스프레드시트 열 이름 방식.)
@@ -125,7 +140,8 @@ score = 100 × (0.45 × nChange + 0.30 × nAccel + 0.25 × nBid)
    - 장투봇: 매수 후 24시간이 지났는가? → 안 지났으면 이번 tick은 아무것도 안 함
 2. 고정 익절: pnl ≥ takeProfitRate → 매도(reason="profit")
 3. 고정 손절: pnl ≤ -stopLossRate → 매도(reason="loss")
-4. 붕괴 스코어 ≥ COLLAPSE_THRESHOLD(25) → 조기 매도(reason="signal")
+4. 장투봇 최대 보유기간 도달 → 강제 매도(reason="timeout")
+5. 붕괴 스코어 ≥ COLLAPSE_THRESHOLD(25) → 조기 매도(reason="signal")
 ```
 
 pnl은 수수료 포함 실현 기준으로 계산한다:
@@ -162,7 +178,7 @@ collapseScore = 100 × (0.45 × nRetrace + 0.30 × nDecel + 0.25 × nAskDominanc
 
 | reason | 트리거 | 상태(state)는 실제 손익 부호로 결정 |
 |---|---|---|
-| `timeout` | 단타봇 세션 종료 | `sold_profit`/`sold_loss` (부호 기준) |
+| `timeout` | 단타봇 세션 종료 또는 장투봇 최대 보유기간 도달 | `sold_profit`/`sold_loss` (부호 기준) |
 | `profit` | 고정 익절 | `sold_profit` |
 | `loss` | 고정 손절 | `sold_loss` |
 | `signal` | 붕괴 스코어 임계값 초과 | `sold_profit`/`sold_loss` (부호 기준) |
@@ -178,6 +194,7 @@ collapseScore = 100 × (0.45 × nRetrace + 0.30 × nDecel + 0.25 × nAskDominanc
 | 연속 API 오류 | `maxConsecutiveApiErrors` = 3회 | 실거래 모드에서 주문/체결조회가 3회 연속 실패하면 엔진 전체 정지. 성공 시 카운터 리셋. |
 | 주문 idempotency | `identifier` 필드 | 매수/매도 주문마다 `bot-{botId}-{buy|sell}-{uid}` 형태의 고유 identifier를 Upbit에 전달해, 같은 요청이 중복 전송돼도 거래소 측에서 중복 주문을 거부하도록 한다. |
 | 수동 킬스위치 | `setEnabled(on)` | 로봇 매수봇 UI의 전체 on/off 토글. |
+| 개별 신규진입 스위치 | `setBotEnabled(id, on)` | 로봇 상세 패널의 시작/중지. 중지 시 신규 매수만 막고 기존 포지션 청산 감시는 유지. |
 
 리스크 가드 상태(`dailyPnlKrw`, `equityPeakKrw`, `consecutiveApiErrors` 등)는 **영속화하지
 않는다** — 런타임 포지션과 동일하게 앱 재시작 시 초기화된다.
@@ -241,6 +258,9 @@ timestamp,trade_id,bot_id,bot_name,market,mode,price,pnl_rate,trade_value_accel,
   많이 오른 뒤에 진입하게 될 수 있다.
 - **슬리피지 미반영**: 수수료(`feeRate`)만 pnl 계산에 반영되고, 급등 추격 시장가 주문에서
   발생하는 슬리피지는 모델링돼 있지 않다.
+- **최소 매도금액 사전 검증 없음**: 5,000원으로 매수한 포지션이 손실 상태가 되면 평가 주문총액이
+  업비트 최소 매도금액보다 작아져 청산 주문이 거부될 수 있다. 실거래 확대 전 `orders/chance`와
+  현재 평가금액을 이용한 주문 직전 검증 및 잔여자산 처리 정책이 필요하다.
 - **캔들(분봉) 저장소 없음**: 60초 롤링 틱 이력만 메모리에 유지하므로, RSI/MACD 같은 정식
   기술지표는 지금 인프라로는 계산할 수 없다(붕괴 스코어는 이 한계를 피해 틱 이력만으로 계산하도록
   설계됨).

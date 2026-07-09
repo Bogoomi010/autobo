@@ -3,12 +3,12 @@
  * 게임 아키텍처로 이식 — React state 대신 싱글턴 + `bus` 이벤트로 UI(botDock.ts)에 통지한다.
  *
  * 1초 tick 루프: 봇 생성 시점부터 사용자가 고른 시간 동안(또는 수동 스캔 5분) 급등 코인을 탐지해
- * 대기 중인 봇에게 배정 → 봇당 예산(기본 1만원) 시장가 매수 → 익절/손절 자동 매도.
+ * 대기 중인 봇에게 배정 → 봇당 예산(기본 5천원) 시장가 매수 → 익절/손절 자동 매도.
  *
  * 단타봇/장투봇은 매도 알고리즘 자체는 같고(고정 익절/손절 + 붕괴 스코어 조기매도),
  * "매도를 허용하는 시점"만 다르다.
  * - 단타봇: 세션(스캔 창) 시간 안에서만 매도 판정을 하며, 세션이 끝나면 보유 중이어도 강제 매도한다.
- * - 장투봇: 매수 후 최소 24시간이 지나기 전에는 어떤 매도 판정도 하지 않고 계속 보유한다.
+ * - 장투봇: 매수 후 최소 24시간이 지나기 전에는 어떤 매도 판정도 하지 않고, 설정한 최대 보유기간에는 강제 청산한다.
  * 각자의 조건을 통과한 뒤부터는 동일하게 고정 익절/손절을 먼저 확인하고, 그 사이 구간에서는
  * 붕괴 스코어(진입 스코어의 반전판 — 고점 대비 되돌림/체결대금 감속/매도 우위 전환)가 임계값을
  * 넘으면 조기 매도한다.
@@ -25,7 +25,10 @@ import { investment } from "../systems/InvestmentSystem";
 import { COLLAPSE_THRESHOLD, scoreCollapse, scoreSurgeCandidates } from "./surge";
 import {
   BOT_HOLD_LIMIT_MS,
+  BOT_MAX_LONGTERM_DURATION_MINUTES,
   BOT_MAX_BUDGET_KRW,
+  BOT_MIN_BUDGET_KRW,
+  BOT_MIN_LONGTERM_DURATION_MINUTES,
   BOT_TYPE_LABEL,
   DEFAULT_BOT_ENGINE_CONFIG,
   DEFAULT_BOT_SETTINGS,
@@ -71,6 +74,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 interface RosterEntry {
   id: string;
   name: string;
+  enabled: boolean;
   settings: BotSettings;
   realizedPnlKrw: number;
   tradesDone: number;
@@ -130,9 +134,22 @@ function isValidSettings(value: unknown): value is BotSettings {
   );
 }
 
-/** 원금 상한(BOT_MAX_BUDGET_KRW) 적용 — 예전에 저장된 더 큰 예산의 봇도 불러올 때 같이 낮춘다 */
+/** 예산/기간 정책 적용 — 저장 데이터도 현재 실거래 최소액과 종류별 기간 범위에 맞춘다. */
 function clampSettings(settings: BotSettings): BotSettings {
-  return { ...settings, budgetKrw: Math.min(settings.budgetKrw, BOT_MAX_BUDGET_KRW) };
+  const durationMinutes =
+    settings.botType === "longterm"
+      ? Math.max(BOT_MIN_LONGTERM_DURATION_MINUTES, Math.min(settings.scanWindow.durationMinutes, BOT_MAX_LONGTERM_DURATION_MINUTES))
+      : Math.max(30, Math.min(settings.scanWindow.durationMinutes, 24 * 60));
+  const startAt = settings.scanWindow.startAt;
+  return {
+    ...settings,
+    budgetKrw: Math.max(BOT_MIN_BUDGET_KRW, Math.min(settings.budgetKrw, BOT_MAX_BUDGET_KRW)),
+    scanWindow: {
+      ...settings.scanWindow,
+      durationMinutes,
+      ...(typeof startAt === "number" ? { endAt: startAt + durationMinutes * 60_000 } : {}),
+    },
+  };
 }
 
 function isValidLogs(value: unknown): value is BotLogEntry[] {
@@ -150,17 +167,26 @@ function loadRoster(): RosterEntry[] {
     if (!Array.isArray(parsed)) return [];
     return parsed
       .filter(
-        (e): e is { id: string; name: string; settings?: unknown; realizedPnlKrw?: unknown; tradesDone?: unknown; logs?: unknown } =>
+        (e): e is { id: string; name: string; enabled?: unknown; settings?: unknown; realizedPnlKrw?: unknown; tradesDone?: unknown; logs?: unknown } =>
           !!e && typeof e === "object" && typeof (e as RosterEntry).id === "string" && typeof (e as RosterEntry).name === "string"
       )
-      .map((e) => ({
-        id: e.id,
-        name: e.name,
-        settings: clampSettings(isValidSettings(e.settings) ? e.settings : DEFAULT_BOT_SETTINGS),
-        realizedPnlKrw: typeof e.realizedPnlKrw === "number" ? e.realizedPnlKrw : 0,
-        tradesDone: typeof e.tradesDone === "number" ? e.tradesDone : 0,
-        logs: isValidLogs(e.logs) ? e.logs : [],
-      }));
+      .map((e) => {
+        const rawSettings = isValidSettings(e.settings) ? e.settings : DEFAULT_BOT_SETTINGS;
+        const legacyUnderMinimum = rawSettings.budgetKrw < BOT_MIN_BUDGET_KRW;
+        const logs = isValidLogs(e.logs) ? e.logs : [];
+        return {
+          id: e.id,
+          name: e.name,
+          // 기존 5천원 미만 봇은 주문액을 자동 증액한 채 바로 실행하지 않도록 안전하게 일시정지한다.
+          enabled: legacyUnderMinimum ? false : typeof e.enabled === "boolean" ? e.enabled : true,
+          settings: clampSettings(rawSettings),
+          realizedPnlKrw: typeof e.realizedPnlKrw === "number" ? e.realizedPnlKrw : 0,
+          tradesDone: typeof e.tradesDone === "number" ? e.tradesDone : 0,
+          logs: legacyUnderMinimum
+            ? [...logs, { at: Date.now(), message: `⏸ 최소 주문금액 ${krw(BOT_MIN_BUDGET_KRW)} 적용으로 개별 중지` }].slice(-BOT_LOG_MAX)
+            : logs,
+        };
+      });
   } catch {
     return [];
   }
@@ -171,6 +197,7 @@ function saveRoster(bots: TradeBot[]): void {
     const roster: RosterEntry[] = bots.map((b) => ({
       id: b.id,
       name: b.name,
+      enabled: b.enabled,
       settings: b.settings,
       realizedPnlKrw: b.realizedPnlKrw,
       tradesDone: b.tradesDone,
@@ -182,10 +209,11 @@ function saveRoster(bots: TradeBot[]): void {
   }
 }
 
-function makeBot(id: string, name: string, settings: BotSettings): TradeBot {
+function makeBot(id: string, name: string, settings: BotSettings, enabled = true): TradeBot {
   return {
     id,
     name,
+    enabled,
     state: "idle",
     settings,
     targetMarket: null,
@@ -243,7 +271,7 @@ function uid(): string {
 class BotEngine {
   // 런타임 포지션(진입가/수량 등)은 그대로 초기화하되, 누적 실현손익/거래 횟수/활동 로그는 명단과 함께 복원한다
   private bots: TradeBot[] = loadRoster().map((r) => ({
-    ...makeBot(r.id, r.name, r.settings),
+    ...makeBot(r.id, r.name, r.settings, r.enabled),
     realizedPnlKrw: r.realizedPnlKrw,
     tradesDone: r.tradesDone,
     logs: r.logs,
@@ -310,6 +338,42 @@ class BotEngine {
     this.bots = [...this.bots, makeBot(uid(), nextBotName(this.bots, settings.botType), clampSettings(settings))];
     saveRoster(this.bots);
     this.notify();
+  }
+
+  /** 개별 봇의 신규 진입만 켜고 끈다. 보유 중 포지션의 손익 감시와 청산은 중지하지 않는다. */
+  setBotEnabled(id: string, on: boolean): void {
+    const bot = this.bots.find((b) => b.id === id);
+    if (!bot || bot.enabled === on) return;
+
+    const now = Date.now();
+    let settings = bot.settings;
+    const windowExpired = typeof settings.scanWindow.endAt === "number" && settings.scanWindow.endAt <= now;
+    if (on && windowExpired) {
+      settings = {
+        ...settings,
+        scanWindow: {
+          ...settings.scanWindow,
+          startAt: now,
+          endAt: now + settings.scanWindow.durationMinutes * 60_000,
+        },
+      };
+    }
+
+    const canReturnToIdle = bot.state === "idle" || bot.state === "scanning";
+    this.patchBot(id, {
+      enabled: on,
+      settings,
+      ...(canReturnToIdle ? { state: "idle" as const } : {}),
+      lastMessage: on
+        ? this.enabled
+          ? "개별 시작, 대기 중"
+          : "개별 시작됨 · 전체 봇 꺼짐"
+        : bot.state === "holding"
+          ? "신규 매수 중지 · 보유 포지션 관리 중"
+          : "개별 중지",
+      logs: this.appendLogFor(id, on ? "▶️ 개별 봇 시작" : "⏸ 개별 봇 중지 — 신규 매수만 중단"),
+    });
+    bus.emit(EV.TOAST, `${bot.name} ${on ? "시작" : "중지"}`, on ? "good" : "info");
   }
 
   removeBot(id: string): void {
@@ -482,8 +546,11 @@ class BotEngine {
       this.inFlight.delete(botId);
       return;
     }
-    // 저장된 설정이 예전 큰 예산이더라도 실제 주문은 항상 원금 상한 이하로만 나간다
-    const budgetKrw = Math.min(bot.settings.budgetKrw, BOT_MAX_BUDGET_KRW);
+    if (!bot.enabled) {
+      this.inFlight.delete(botId);
+      return;
+    }
+    const budgetKrw = Math.max(BOT_MIN_BUDGET_KRW, Math.min(bot.settings.budgetKrw, BOT_MAX_BUDGET_KRW));
 
     if (store.mode === "real" && !store.connected) {
       this.patchBot(botId, {
@@ -726,14 +793,14 @@ class BotEngine {
 
   /** 이 봇의 동작 시간대(스캔 창)가 지금 활성인지 — 수동 스캔은 모든 봇에 공통으로 강제 적용된다 */
   private isBotActive(bot: TradeBot, manualActive: boolean, now: number): boolean {
-    return manualActive || isWithinDailyScanWindow(bot.settings.scanWindow, now);
+    return bot.enabled && (manualActive || isWithinDailyScanWindow(bot.settings.scanWindow, now));
   }
 
   private runTick(): void {
     const now = Date.now();
     this.rolloverDailyIfNeeded(now);
     const manualActive = this.manualScanUntil !== null && now < this.manualScanUntil;
-    const anyActive = manualActive || this.bots.some((b) => isWithinDailyScanWindow(b.settings.scanWindow, now));
+    const anyActive = this.bots.some((b) => this.isBotActive(b, manualActive, now));
     this.scanActive = anyActive;
     if (anyActive) this.lastScanAt = now;
 
@@ -755,7 +822,7 @@ class BotEngine {
         case "scanning":
           if (!active) {
             changed = true;
-            return { ...bot, state: "idle" as const, lastMessage: "대기 중" };
+            return { ...bot, state: "idle" as const, lastMessage: bot.enabled ? "대기 중" : "개별 중지" };
           }
           return bot;
         case "holding": {
@@ -873,6 +940,16 @@ class BotEngine {
       }
       if (pnl <= -bot.settings.stopLossRate) {
         this.executeSell(bot, "loss", pnl);
+        continue;
+      }
+
+      // 장투봇은 최소 24시간 이후 신호를 우선 확인하고, 설정한 최대 보유기간에 도달하면 강제 청산한다.
+      if (
+        bot.settings.botType === "longterm" &&
+        bot.lastActionAt &&
+        now - bot.lastActionAt >= bot.settings.scanWindow.durationMinutes * 60_000
+      ) {
+        this.executeSell(bot, "timeout", pnl);
         continue;
       }
 

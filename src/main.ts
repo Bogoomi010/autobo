@@ -76,7 +76,30 @@ async function boot(): Promise<void> {
   window.addEventListener("resize", fitToWindow);
 
   // 개발 콘솔 디버그용
-  (window as unknown as { __game: Phaser.Game }).__game = game;
+  const debugWindow = window as unknown as {
+    __game: Phaser.Game;
+    render_game_to_text: () => string;
+  };
+  debugWindow.__game = game;
+  debugWindow.render_game_to_text = () =>
+    JSON.stringify({
+      coordinateSystem: "화면 좌상단 원점, x는 오른쪽, y는 아래쪽",
+      mode: store.mode,
+      botEngineEnabled: botEngine.isEnabled(),
+      bots: botEngine.getBots().map((bot) => ({
+        id: bot.id,
+        name: bot.name,
+        type: bot.settings.botType,
+        enabled: bot.enabled,
+        state: bot.state,
+        budgetKrw: bot.settings.budgetKrw,
+        durationMinutes: bot.settings.scanWindow.durationMinutes,
+        market: bot.targetMarket,
+        pnlRate: bot.currentPnlRate,
+      })),
+      openModal:
+        ["modeModal", "botCreateModal", "botDetailModal"].find((id) => document.getElementById(id)?.classList.contains("open")) ?? null,
+    });
 }
 
 void boot();

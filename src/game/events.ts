@@ -53,7 +53,7 @@ export const EV = {
   TOAST: "toast",
   /**
    * (bots: TradeBot[], meta: { enabled: boolean; scanActive: boolean; lastScanAt: number|null })
-   * 로봇 매수봇 명단/상태 변경 — botDock UI 갱신용
+   * 로봇 매수봇 명단/상태 변경 — 각 TradeBot.enabled를 포함해 botDock/상세/월드 UI를 갱신한다.
    */
   BOTS_CHANGED: "bots-changed",
   /** (없음) 봇 생성 창 열기 — 예산/투자 시간/익절·손절 %를 입력받아 botEngine.addBot 호출 */

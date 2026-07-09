@@ -5,16 +5,24 @@
 import noUiSlider from "nouislider";
 import "nouislider/dist/nouislider.css";
 import { botEngine } from "../bots/botEngine";
-import { BOT_MAX_BUDGET_KRW, BOT_TYPE_LABEL, DEFAULT_BOT_SETTINGS, type BotSettings, type BotType } from "../bots/types";
+import {
+  BOT_MAX_BUDGET_KRW,
+  BOT_MAX_LONGTERM_DURATION_MINUTES,
+  BOT_MIN_BUDGET_KRW,
+  BOT_MIN_LONGTERM_DURATION_MINUTES,
+  BOT_TYPE_LABEL,
+  DEFAULT_BOT_SETTINGS,
+  type BotSettings,
+  type BotType,
+} from "../bots/types";
 import { bus, EV } from "../game/events";
 import { krw } from "../game/format";
 
-const QUICK_BUDGETS = [500, 1_000, 1_500, BOT_MAX_BUDGET_KRW];
-const MIN_BUDGET_KRW = 500; // 원금 상한(BOT_MAX_BUDGET_KRW=2,000원) 안에서 고르게 하는 하한
+const QUICK_BUDGETS = [BOT_MIN_BUDGET_KRW, 6_000, 10_000, 20_000];
 
 const BOT_TYPE_OPTIONS: { type: BotType; text: string }[] = [
   { type: "scalp", text: `⚡ ${BOT_TYPE_LABEL.scalp} (최대 24시간 보유)` },
-  { type: "longterm", text: `🌱 ${BOT_TYPE_LABEL.longterm} (최소 24시간 보유)` },
+  { type: "longterm", text: `🌱 ${BOT_TYPE_LABEL.longterm} (1~30일 보유)` },
 ];
 
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
@@ -25,9 +33,14 @@ function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
 
-/** 지속시간 슬라이더 값(10~1440) → "N시간 M분" (24시간이면 "24시간") */
+/** 지속시간 슬라이더 값 → 단타는 시간/분, 장투는 일/시간으로 표시 */
 function fmtDuration(raw: number | string): string {
   const t = Math.round(Number(raw) / DURATION_STEP_MINUTES) * DURATION_STEP_MINUTES;
+  if (t >= DAY_MIN) {
+    const days = Math.floor(t / DAY_MIN);
+    const hours = Math.floor((t % DAY_MIN) / 60);
+    return hours === 0 ? `${days}일` : `${days}일 ${hours}시간`;
+  }
   const h = Math.floor(t / 60);
   const m = t % 60;
   if (h === 0) return `${m}분`;
@@ -205,16 +218,29 @@ export function initBotCreateModal(): void {
   function setBotType(next: BotType): void {
     botType = next;
     for (const [t, btn] of typeButtons) btn.className = t === botType ? "pixel-btn" : "pixel-btn wood";
-    timeHint.textContent =
-      botType === "scalp"
-        ? "선택한 시간이 끝나면 보유 중인 포지션도 강제로 매도돼요."
-        : "매수 스캔에만 적용돼요. 매도는 최소 24시간 보유 후 익절/손절 기준을 따라요.";
+    if (botType === "scalp") {
+      durationBlockLabel.textContent = "지금부터";
+      durationSlider.updateOptions({ range: { min: DURATION_STEP_MINUTES, max: DAY_MIN }, step: DURATION_STEP_MINUTES }, false);
+      durationSlider.set(Math.min(scanDurationMinutes, DAY_MIN));
+      timeHint.textContent = "선택한 시간이 끝나면 보유 중인 포지션도 강제로 매도돼요.";
+    } else {
+      durationBlockLabel.textContent = "최대 보유기간";
+      durationSlider.updateOptions(
+        { range: { min: BOT_MIN_LONGTERM_DURATION_MINUTES, max: BOT_MAX_LONGTERM_DURATION_MINUTES }, step: DAY_MIN },
+        false
+      );
+      durationSlider.set(Math.max(BOT_MIN_LONGTERM_DURATION_MINUTES, scanDurationMinutes));
+      timeHint.textContent = "최소 24시간 보유 후 익절·손절을 판단하고, 설정한 보유기간이 끝나면 자동 매도해요.";
+    }
   }
 
   function renderTimePreview(): void {
     const startAt = Date.now();
     const endAt = startAt + scanDurationMinutes * 60_000;
-    timePreview.textContent = `지금부터 ${fmtDuration(scanDurationMinutes)} · ${fmtKstDateTime(startAt)} ~ ${fmtKstDateTime(endAt)} KST`;
+    timePreview.textContent =
+      botType === "longterm"
+        ? `최대 ${fmtDuration(scanDurationMinutes)} 보유 · 신규 스캔 ${fmtKstDateTime(startAt)} ~ ${fmtKstDateTime(endAt)} KST`
+        : `지금부터 ${fmtDuration(scanDurationMinutes)} · ${fmtKstDateTime(startAt)} ~ ${fmtKstDateTime(endAt)} KST`;
   }
 
   function showError(msg: string): void {
@@ -253,8 +279,15 @@ export function initBotCreateModal(): void {
   }
 
   function readSettings(): BotSettings | null {
-    if (budget < MIN_BUDGET_KRW) {
-      showError(`예산은 최소 ${krw(MIN_BUDGET_KRW)} 이상이어야 해요.`);
+    if (budget < BOT_MIN_BUDGET_KRW) {
+      showError(`예산은 업비트 최소 주문금액인 ${krw(BOT_MIN_BUDGET_KRW)} 이상이어야 해요.`);
+      return null;
+    }
+    if (
+      botType === "longterm" &&
+      (scanDurationMinutes < BOT_MIN_LONGTERM_DURATION_MINUTES || scanDurationMinutes > BOT_MAX_LONGTERM_DURATION_MINUTES)
+    ) {
+      showError("장투봇 보유기간은 1일에서 30일 사이여야 해요.");
       return null;
     }
     const takeProfitPct = Number(tpInput.value);

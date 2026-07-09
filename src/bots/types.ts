@@ -35,6 +35,8 @@ export type BotState =
 export interface TradeBot {
   id: string;
   name: string;
+  /** 이 봇의 신규 매수 허용 여부. false여도 이미 보유한 포지션의 매도 감시는 계속한다. */
+  enabled: boolean;
   state: BotState;
   settings: BotSettings;
   targetMarket: string | null;
@@ -80,7 +82,7 @@ export interface ScanWindowConfig {
 /**
  * 봇 종류 — 매도 판정을 "언제부터 허용하는지"가 다르다(매도 알고리즘 자체는 공통).
  * - scalp(단타봇): 세션(스캔 창) 안에서만 매도 판정, 세션이 끝나면 보유 중이어도 강제 매도
- * - longterm(장투봇): 매수 후 최소 24시간이 지나기 전에는 어떤 매도 판정도 하지 않고 계속 보유
+ * - longterm(장투봇): 최소 24시간 이후 매도 판정을 열고, 설정한 최대 보유기간에는 강제 청산
  */
 export type BotType = "scalp" | "longterm";
 
@@ -92,14 +94,18 @@ export const BOT_TYPE_LABEL: Record<BotType, string> = {
 /** 장투봇 최소 보유시간(24시간) — 단타봇은 대신 BotSettings.scanWindow(세션)로 매도 시점을 제한한다 */
 export const BOT_HOLD_LIMIT_MS = 24 * 60 * 60 * 1000;
 
+/** 장투봇은 최소 1일, 최대 30일까지 한 거래의 보유기간을 설정한다. */
+export const BOT_MIN_LONGTERM_DURATION_MINUTES = 24 * 60;
+export const BOT_MAX_LONGTERM_DURATION_MINUTES = 30 * 24 * 60;
+
 /**
- * 봇 1회 매수에 쓸 수 있는 원금 상한(KRW). 원금 자체는 이 값을 넘지 않고,
+ * 업비트 KRW 마켓 실거래 최소 주문금액과 앱의 1회 주문 안전 상한.
+ * 원금 자체는 상한을 넘지 않고,
  * 원금으로 번 실현수익은 한도 없이 계속 그 봇의 실적(realizedPnlKrw)에 쌓인다 —
- * 즉 "원금은 2,000원으로 고정, 수익은 매도 즉시 금고로" 흐름을 만드는 안전판이다.
- * (참고: 업비트 실거래 최소 주문금액 5,000원보다 작아 실거래 모드에서는 주문이 거부될 수 있다 —
- * 지금은 모의 모드 데이터 축적 단계라 의도적으로 낮게 잡았다.)
+ * 수익은 매도 즉시 금고로 보내는 흐름을 만든다.
  */
-export const BOT_MAX_BUDGET_KRW = 2_000;
+export const BOT_MIN_BUDGET_KRW = 5_000;
+export const BOT_MAX_BUDGET_KRW = 100_000;
 
 /** 봇 1대별 사용자 설정 — 생성 창에서 입력받아 봇마다 독립적으로 가진다 */
 export interface BotSettings {
@@ -111,7 +117,11 @@ export interface BotSettings {
   takeProfitRate: number;
   /** 손절 기준 손실률(예: 0.02 = -2%, 양수로 표기) */
   stopLossRate: number;
-  /** 투자 시간(스캔 창). 새 봇은 startAt/endAt 기준 1회성 창을 쓴다. */
+  /**
+   * 투자 시간.
+   * - 단타봇: 신규 진입 스캔 창이자 포지션 강제 청산 시각
+   * - 장투봇: 신규 진입 스캔 창이면서, 매수 후 한 거래의 최대 보유기간
+   */
   scanWindow: ScanWindowConfig;
 }
 
@@ -125,7 +135,7 @@ export const DEFAULT_SCAN_WINDOW: ScanWindowConfig = {
 /** 봇 생성 창의 기본값 */
 export const DEFAULT_BOT_SETTINGS: BotSettings = {
   botType: "scalp",
-  budgetKrw: BOT_MAX_BUDGET_KRW,
+  budgetKrw: BOT_MIN_BUDGET_KRW,
   takeProfitRate: 0.03,
   stopLossRate: 0.02,
   scanWindow: DEFAULT_SCAN_WINDOW,

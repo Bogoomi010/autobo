@@ -26,6 +26,11 @@ function pad2(n: number): string {
 }
 
 function fmtDuration(minutes: number): string {
+  if (minutes >= 24 * 60) {
+    const days = Math.floor(minutes / (24 * 60));
+    const hours = Math.floor((minutes % (24 * 60)) / 60);
+    return hours === 0 ? `${days}일` : `${days}일 ${hours}시간`;
+  }
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
   if (h === 0) return `${m}분`;
@@ -43,6 +48,14 @@ export function botTypeIcon(botType: BotType): string {
 
 export function botTypeLabel(botType: BotType): string {
   return BOT_TYPE_LABEL[botType];
+}
+
+/** 개별 중지 상태까지 반영한 사용자 표시용 상태명 */
+export function botStateLabel(bot: TradeBot): string {
+  if (bot.enabled) return BOT_STATE_LABEL[bot.state];
+  if (bot.state === "holding" || bot.state === "selling") return "중지 · 포지션 관리";
+  if (bot.state === "buying" || bot.state === "targeting") return "중지 요청 처리 중";
+  return "개별 중지";
 }
 
 /** "₩10,000 · 19:30(30분) · +3.0%/-2.0%" */

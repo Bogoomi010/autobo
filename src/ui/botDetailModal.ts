@@ -4,7 +4,7 @@
  * EV.OPEN_BOT_DETAIL(botId) 수신 시 열림 → 닫힐 때 EV.BOT_DETAIL_CLOSED 를 1회 방송한다.
  */
 import { botEngine } from "../bots/botEngine";
-import { BOT_STATE_LABEL, botTier, botTypeIcon, botTypeLabel, formatBotFootLine, formatBotSettingsLine, isBotBusyState } from "../bots/botFormat";
+import { botStateLabel, botTier, botTypeIcon, botTypeLabel, formatBotFootLine, formatBotSettingsLine, isBotBusyState } from "../bots/botFormat";
 import type { TradeBot } from "../bots/types";
 import { bus, EV } from "../game/events";
 import { pct } from "../game/format";
@@ -87,6 +87,18 @@ function injectStyleOnce(): void {
     #botDetailModal .bdm-pnl.down { color: #3b82f6; }
     #botDetailModal .bdm-settings { margin-top: 6px; font-size: 11px; color: #8a5a33; }
     #botDetailModal .bdm-foot { margin-top: 2px; font-size: 11px; color: #8a5a33; }
+    #botDetailModal .bdm-controls {
+      flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+      border-bottom: 3px solid #3d2a1a; background: #f2e5c9;
+    }
+    #botDetailModal .bdm-toggle {
+      flex: none; border: 3px solid #3d2a1a; border-radius: 2px; padding: 6px 10px;
+      background: #f26d5b; color: #f7ecd4; font-family: inherit; font-size: 11px; font-weight: 700;
+      cursor: pointer; box-shadow: 0 2px 0 #3d2a1a;
+    }
+    #botDetailModal .bdm-toggle.start { background: #2fbf9b; }
+    #botDetailModal .bdm-toggle:hover { transform: translateY(1px); box-shadow: 0 1px 0 #3d2a1a; }
+    #botDetailModal .bdm-control-hint { flex: 1; font-size: 10px; line-height: 1.4; color: #8a5a33; }
     #botDetailModal .bdm-log-title { flex: none; padding: 8px 12px 4px; font-size: 12px; font-weight: 700; color: #8a5a33; }
     #botDetailModal .bdm-log-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 4px; }
     #botDetailModal .bdm-log-row { font-size: 11px; line-height: 1.4; display: flex; gap: 6px; }
@@ -137,13 +149,21 @@ export function initBotDetailModal(): void {
   foot.className = "bdm-foot";
   body.append(tierEl, marketRow, settings, foot);
 
+  const controls = document.createElement("div");
+  controls.className = "bdm-controls";
+  const toggleBtn = document.createElement("button");
+  toggleBtn.className = "bdm-toggle";
+  const controlHint = document.createElement("div");
+  controlHint.className = "bdm-control-hint";
+  controls.append(toggleBtn, controlHint);
+
   const logTitle = document.createElement("div");
   logTitle.className = "bdm-log-title";
   logTitle.textContent = "📜 활동 로그";
   const logList = document.createElement("div");
   logList.className = "bdm-log-list";
 
-  panel.append(head, body, logTitle, logList);
+  panel.append(head, body, controls, logTitle, logList);
   overlay.append(panel);
   ui.append(overlay);
 
@@ -159,7 +179,7 @@ export function initBotDetailModal(): void {
     icon.textContent = botTypeIcon(bot.settings.botType);
     icon.style.background = badgeColor(bot.name);
     name.textContent = `${bot.name} (${botTypeLabel(bot.settings.botType)})`;
-    state.textContent = BOT_STATE_LABEL[bot.state];
+    state.textContent = botStateLabel(bot);
     state.classList.toggle("busy", isBotBusyState(bot.state));
     tierEl.textContent = `등급 ${botTier(bot).label}`;
 
@@ -173,6 +193,13 @@ export function initBotDetailModal(): void {
     }
     settings.textContent = formatBotSettingsLine(bot);
     foot.textContent = formatBotFootLine(bot);
+    toggleBtn.textContent = bot.enabled ? "⏸ 개별 중지" : "▶ 개별 시작";
+    toggleBtn.className = `bdm-toggle${bot.enabled ? "" : " start"}`;
+    controlHint.textContent = bot.enabled
+      ? "중지하면 신규 매수만 멈추고 보유 포지션은 계속 감시·청산합니다."
+      : bot.state === "holding" || bot.state === "selling"
+        ? "신규 매수는 중지됐지만 현재 포지션은 안전하게 관리 중입니다."
+        : "시작하면 이 봇만 다시 신규 매수를 탐색합니다.";
 
     logList.replaceChildren();
     if (bot.logs.length === 0) {
@@ -215,6 +242,10 @@ export function initBotDetailModal(): void {
   }
 
   closeBtn.addEventListener("click", close);
+  toggleBtn.addEventListener("click", () => {
+    const bot = findBot();
+    if (bot) botEngine.setBotEnabled(bot.id, !bot.enabled);
+  });
   overlay.addEventListener("mousedown", (e) => {
     if (e.target === overlay) close();
   });
