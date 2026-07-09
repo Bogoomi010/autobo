@@ -3,6 +3,8 @@
  * 상단 바(금고/들고 있는 돈/총 자산/API 램프) + 우측 포지션 패널(실시간 손익) +
  * 거래 로그 + 토스트. 초기값은 store에서 직접 읽고 이후 bus 이벤트를 구독한다.
  */
+import { botEngine } from "../bots/botEngine";
+import type { TradeBot } from "../bots/types";
 import { STOP_LOSS_RATE, TAKE_PROFIT_RATE } from "../game/config";
 import { bus, EV } from "../game/events";
 import { krw, pct } from "../game/format";
@@ -12,6 +14,8 @@ import { makeBadge, signClass } from "./uiKit";
 
 /** 최신 시세 캐시 (포지션 손익 재계산용) */
 let tickers = new Map<string, Ticker>();
+/** 최신 매수봇 목록 캐시 (봇이 투자 중인 코인을 "투자 현황"에도 같이 보여주기 위함) */
+let latestBots: TradeBot[] = [];
 
 export function initHud(): void {
   const ui = document.getElementById("ui")!;
@@ -73,8 +77,18 @@ export function initHud(): void {
 
   // ── 우측 포지션 패널 ───────────────────────────────────────
   const panel = el("div", "", { id: "positions" });
-  const posHead = el("div", "panel-head", { text: "📊 투자 현황" });
+  const posHead = el("div", "panel-head collapsible");
+  posHead.append(
+    el("span", "", { text: "📊 투자 현황" }),
+    el("span", "chevron", { text: "▾" })
+  );
   const posList = el("div", "", { id: "posList" });
+
+  // 클릭으로 목록 접기/펼치기 (헤더는 항상 보임)
+  posHead.addEventListener("click", () => {
+    const collapsed = posList.classList.toggle("collapsed");
+    posHead.classList.toggle("collapsed", collapsed);
+  });
 
   const tradeLog = el("div", "", { id: "tradeLog" });
   const tlHead = el("div", "tl-head", { text: "🧾 최근 청산" });
@@ -101,9 +115,13 @@ export function initHud(): void {
     totalEl.val.textContent = krw(store.totalAssets(tickers));
   }
 
-  function renderPositions(positions: Position[]): void {
+  /** 플레이어 포지션 + 매수봇이 보유 중인 코인을 한 목록에 같이 그린다 */
+  function renderInvestments(): void {
+    const positions = store.positions;
+    const botHoldings = latestBots.filter((b) => (b.state === "holding" || b.state === "selling") && b.targetMarket);
+
     posList.replaceChildren();
-    if (positions.length === 0) {
+    if (positions.length === 0 && botHoldings.length === 0) {
       posList.append(
         el("div", "empty", { html: "투자 중인 코인이<br>없어요 🪙" })
       );
@@ -111,12 +129,14 @@ export function initHud(): void {
       return;
     }
     for (const p of positions) posList.append(posCard(p));
+    for (const b of botHoldings) posList.append(botPosCard(b));
     renderTotal();
   }
 
-  /** TICKERS 수신 시 각 포지션 카드의 손익만 갱신 (전체 리렌더 X) */
+  /** TICKERS 수신 시 (봇 카드 제외) 각 포지션 카드의 손익만 갱신 (전체 리렌더 X) — 봇 손익은 EV.BOTS_CHANGED로 갱신된다 */
   function refreshPnl(): void {
     for (const card of Array.from(posList.querySelectorAll<HTMLElement>(".pos-card"))) {
+      if (card.dataset.kind === "bot") continue; // 봇 카드는 자체 손익 계산(수수료 포함)을 그대로 쓴다
       if (card.dataset.status === "selling") continue; // 매도 중 카드는 손익 갱신 안 함
       const market = card.dataset.market!;
       const entry = Number(card.dataset.entry);
@@ -148,7 +168,8 @@ export function initHud(): void {
   // ── 초기 렌더 (store 직접 읽기) ────────────────────────────
   renderWallet(store.vaultBalance());
   renderCarry(store.carried);
-  renderPositions(store.positions);
+  latestBots = botEngine.getBots();
+  renderInvestments();
   renderTrades(store.trades);
   renderTotal();
 
@@ -161,7 +182,11 @@ export function initHud(): void {
     renderCarry(carried);
     renderTotal();
   });
-  bus.on(EV.POSITIONS, (positions: Position[]) => renderPositions(positions));
+  bus.on(EV.POSITIONS, () => renderInvestments());
+  bus.on(EV.BOTS_CHANGED, (bots: TradeBot[]) => {
+    latestBots = bots;
+    renderInvestments();
+  });
   bus.on(EV.TICKERS, (map: Map<string, Ticker>) => {
     tickers = map;
     refreshPnl();
@@ -204,14 +229,8 @@ export function initHud(): void {
   });
   bus.on(EV.TRADE_CLOSED, (t: ClosedTrade) => {
     renderTrades(store.trades);
-    // 청산 자동 토스트 (익절=good / 손절=bad)
-    const good = t.reason === "take-profit";
-    const emoji = good ? "✨" : "💥";
-    const word = good ? "익절" : "손절";
-    showToast(
-      `${emoji} ${t.nameKo} ${pct(t.pnlRate)} ${word} → ${krw(t.payout)}`,
-      good ? "good" : "bad"
-    );
+    const { emoji, word, good } = closeLabel(t);
+    showToast(`${emoji} ${t.nameKo} ${pct(t.pnlRate)} ${word} → ${krw(t.payout)}`, good ? "good" : "bad");
   });
   bus.on(EV.TOAST, (msg: string, kind?: "info" | "good" | "bad") =>
     showToast(msg, kind ?? "info")
@@ -248,13 +267,22 @@ function posCard(p: Position): HTMLElement {
   const gauge = el("div", "pos-gauge");
   gauge.append(el("div", "mid"), el("div", "fill"));
 
-  card.append(top, gauge);
+  // 자동 익절/손절을 기다리지 않고 지금 시세로 바로 청산 — 익절/손절과 같은 store.closePosition 경로를 탄다
+  const sellBtn = el("button", "pixel-btn tiny coral pos-sell", { text: "🪙 매도" }) as HTMLButtonElement;
+  sellBtn.type = "button";
+  sellBtn.addEventListener("click", () => {
+    sellBtn.disabled = true;
+    void store.closePosition(p.id, "manual", tickers.get(p.market)?.price ?? p.entryPrice);
+  });
 
-  // 매도 주문 진행 중 — 손익 대신 상태 표시 + 카드 흐리게
+  card.append(top, gauge, sellBtn);
+
+  // 매도 주문 진행 중 — 손익/매도 버튼 대신 상태 표시 + 카드 흐리게
   if (p.status === "selling") {
     card.classList.add("selling");
     pnl.textContent = "💸 매도 중…";
     pnl.className = "pos-pnl selling-label";
+    sellBtn.style.display = "none";
     return card;
   }
 
@@ -269,16 +297,59 @@ function posCard(p: Position): HTMLElement {
   return card;
 }
 
-/** 손익 게이지 — 중앙 기준 좌(손절 -3%)/우(익절 +3%)로 채움 */
-function applyGauge(fill: HTMLElement, rate: number): void {
+/** 매수봇이 보유 중인 코인 카드 — 플레이어 포지션과 같은 목록에 같이 그린다(매도 버튼 없음, 봇 상세는 월드 로봇 클릭으로) */
+function botPosCard(bot: TradeBot): HTMLElement {
+  const card = el("div", "pos-card bot");
+  card.dataset.kind = "bot";
+
+  const top = el("div", "pos-top");
+  const symbol = bot.targetMarket ? bot.targetMarket.replace("KRW-", "") : "?";
+  const badge = makeBadge(symbol);
+  const name = el("div", "pos-name");
+  name.append(
+    el("span", "ko", { text: `🤖 ${bot.targetNameKo ?? symbol}` }),
+    el("span", "amt", { text: `${bot.name} · ${krw(bot.investedKrw)}` })
+  );
+  const pnl = el("div", "pos-pnl num", { text: "—" });
+  top.append(badge, name, pnl);
+
+  const gauge = el("div", "pos-gauge");
+  gauge.append(el("div", "mid"), el("div", "fill"));
+
+  card.append(top, gauge);
+
+  if (bot.state === "selling") {
+    card.classList.add("selling");
+    pnl.textContent = "💸 매도 중…";
+    pnl.className = "pos-pnl selling-label";
+    return card;
+  }
+
+  if (bot.currentPnlRate !== null) {
+    pnl.textContent = pct(bot.currentPnlRate);
+    pnl.className = `pos-pnl num ${signClass(bot.currentPnlRate)}`;
+    applyGauge(gauge.querySelector<HTMLElement>(".fill")!, bot.currentPnlRate, bot.settings.takeProfitRate, bot.settings.stopLossRate);
+  }
+  return card;
+}
+
+/** 청산 사유별 표시(이모지/문구/good 여부) — good은 사유가 아니라 실제 손익 부호로 정한다 */
+function closeLabel(t: ClosedTrade): { emoji: string; word: string; good: boolean } {
+  const good = t.pnlRate >= 0;
+  if (t.reason === "manual") return { emoji: good ? "💵" : "🫡", word: "매도", good };
+  return { emoji: good ? "✨" : "💥", word: good ? "익절" : "손절", good };
+}
+
+/** 손익 게이지 — 중앙 기준 좌(손절)/우(익절)로 채움. 봇 카드는 그 봇 고유의 익절/손절률을 넘겨 쓴다 */
+function applyGauge(fill: HTMLElement, rate: number, tp: number = TAKE_PROFIT_RATE, sl: number = STOP_LOSS_RATE): void {
   const half = 50; // 중앙에서 한쪽 끝까지 %
   if (rate >= 0) {
-    const ratio = Math.min(1, rate / TAKE_PROFIT_RATE);
+    const ratio = Math.min(1, rate / tp);
     fill.className = "fill up";
     fill.style.left = "50%";
     fill.style.width = `${ratio * half}%`;
   } else {
-    const ratio = Math.min(1, rate / STOP_LOSS_RATE); // 둘 다 음수 → 양수 비율
+    const ratio = Math.min(1, rate / sl); // 둘 다 음수 → 양수 비율
     fill.className = "fill down";
     fill.style.width = `${ratio * half}%`;
     fill.style.left = `${50 - ratio * half}%`;
@@ -287,9 +358,7 @@ function applyGauge(fill: HTMLElement, rate: number): void {
 
 /** 거래 로그 한 줄 */
 function tradeRow(t: ClosedTrade): HTMLElement {
-  const good = t.reason === "take-profit";
-  const emoji = good ? "✨" : "💥";
-  const word = good ? "익절" : "손절";
+  const { emoji, word } = closeLabel(t);
   const row = el("div", "tl-row");
   row.innerHTML =
     `${emoji} ${escapeHtml(t.nameKo)} ` +

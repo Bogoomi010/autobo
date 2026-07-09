@@ -2,6 +2,8 @@
  * 매수봇 생성 창 — 봇마다 독립적인 예산(금액)/동작 시간대/익절·손절 퍼센트를 입력받는다.
  * EV.OPEN_BOT_CREATE_MODAL 수신 시 열리고, 확정하면 botEngine.addBot(settings)을 직접 호출한다.
  */
+import noUiSlider from "nouislider";
+import "nouislider/dist/nouislider.css";
 import { botEngine } from "../bots/botEngine";
 import { BOT_TYPE_LABEL, DEFAULT_BOT_SETTINGS, type BotSettings, type BotType } from "../bots/types";
 import { bus, EV } from "../game/events";
@@ -15,8 +17,31 @@ const BOT_TYPE_OPTIONS: { type: BotType; text: string }[] = [
   { type: "longterm", text: `🌱 ${BOT_TYPE_LABEL.longterm} (최소 24시간 보유)` },
 ];
 
+// 동작 시간대 — "시작 시각"과 "지속 시간"을 각각 자기 폭 전체를 쓰는 슬라이더로 나눠 받는다.
+// (시작~시작+지속 두 값을 한 슬라이더의 두 손잡이로 합치면 30분처럼 짧은 구간은
+//  하루 두 바퀴(48h) 축 위에서 폭이 거의 안 보여 드래그하기 어려워진다 — 그래서 분리한다)
+// 시작이 몇 시든 지속시간을 최대 24시간까지 주면 자정을 넘어 익일로 넘어가는 구간도 그대로 표현된다
+// (예: 시작 00:00 + 지속 24시간 → "00:00 ~ 00:00").
+const DAY_MIN = 1440;
+const TIME_STEP = 10; // 기존 분(minute) select와 동일한 10분 단위
+
 function pad2(n: number): string {
   return String(n).padStart(2, "0");
+}
+
+/** 시작 슬라이더 값(0~1430) → "HH:MM" */
+function fmtStart(raw: number | string): string {
+  const t = Math.round(Number(raw) / TIME_STEP) * TIME_STEP;
+  return `${pad2(Math.floor(t / 60))}:${pad2(t % 60)}`;
+}
+
+/** 지속시간 슬라이더 값(10~1440) → "N시간 M분" (24시간이면 "24시간") */
+function fmtDuration(raw: number | string): string {
+  const t = Math.round(Number(raw) / TIME_STEP) * TIME_STEP;
+  const h = Math.floor(t / 60);
+  const m = t % 60;
+  if (h === 0) return `${m}분`;
+  return m === 0 ? `${h}시간` : `${h}시간 ${m}분`;
 }
 
 export function initBotCreateModal(): void {
@@ -80,30 +105,44 @@ export function initBotCreateModal(): void {
 
   const timeRow = document.createElement("div");
   timeRow.className = "bcm-time-row";
-  const hourSelect = document.createElement("select");
-  for (let h = 0; h < 24; h += 1) {
-    const opt = document.createElement("option");
-    opt.value = String(h);
-    opt.textContent = pad2(h);
-    hourSelect.append(opt);
-  }
-  const colon = document.createElement("span");
-  colon.textContent = ":";
-  const minuteSelect = document.createElement("select");
-  for (let m = 0; m < 60; m += 10) {
-    const opt = document.createElement("option");
-    opt.value = String(m);
-    opt.textContent = pad2(m);
-    minuteSelect.append(opt);
-  }
-  const durationInput = document.createElement("input");
-  durationInput.type = "number";
-  durationInput.min = "1";
-  durationInput.max = "1440";
-  durationInput.className = "bcm-duration";
-  const durationSuffix = document.createElement("span");
-  durationSuffix.textContent = "분간";
-  timeRow.append(hourSelect, colon, minuteSelect, durationInput, durationSuffix);
+
+  const startBlock = document.createElement("div");
+  startBlock.className = "bcm-slider-block";
+  const startBlockLabel = document.createElement("div");
+  startBlockLabel.className = "bcm-slider-label";
+  startBlockLabel.textContent = "시작 시각";
+  const startSliderEl = document.createElement("div");
+  startSliderEl.className = "bcm-time-slider";
+  startBlock.append(startBlockLabel, startSliderEl);
+
+  const durationBlock = document.createElement("div");
+  durationBlock.className = "bcm-slider-block";
+  const durationBlockLabel = document.createElement("div");
+  durationBlockLabel.className = "bcm-slider-label";
+  durationBlockLabel.textContent = "지속 시간";
+  const durationSliderEl = document.createElement("div");
+  durationSliderEl.className = "bcm-time-slider";
+  durationBlock.append(durationBlockLabel, durationSliderEl);
+
+  timeRow.append(startBlock, durationBlock);
+
+  const numFormat = { to: (v: number) => String(Math.round(v)), from: (v: string) => Number(v) };
+  const startSlider = noUiSlider.create(startSliderEl, {
+    start: [0],
+    behaviour: "drag",
+    range: { min: 0, max: DAY_MIN - TIME_STEP },
+    step: TIME_STEP,
+    tooltips: [{ to: fmtStart, from: Number }],
+    format: numFormat,
+  });
+  const durationSlider = noUiSlider.create(durationSliderEl, {
+    start: [DEFAULT_BOT_SETTINGS.scanWindow.durationMinutes],
+    behaviour: "drag",
+    range: { min: TIME_STEP, max: DAY_MIN },
+    step: TIME_STEP,
+    tooltips: [{ to: fmtDuration, from: Number }],
+    format: numFormat,
+  });
 
   const timePreview = document.createElement("div");
   timePreview.className = "bcm-time-preview";
@@ -165,6 +204,21 @@ export function initBotCreateModal(): void {
   let isOpen = false;
   let budget = DEFAULT_BOT_SETTINGS.budgetKrw;
   let botType: BotType = DEFAULT_BOT_SETTINGS.botType;
+  let scanStartHour = DEFAULT_BOT_SETTINGS.scanWindow.startHourKst;
+  let scanStartMinute = DEFAULT_BOT_SETTINGS.scanWindow.startMinute;
+  let scanDurationMinutes = DEFAULT_BOT_SETTINGS.scanWindow.durationMinutes;
+
+  // 슬라이더 값 변경 → 상태로 반영 — 프로그램적 set()에도 동일하게 호출된다
+  startSlider.on("update", (values) => {
+    const startTotal = Number(values[0]);
+    scanStartHour = Math.floor(startTotal / 60);
+    scanStartMinute = startTotal % 60;
+    renderTimePreview();
+  });
+  durationSlider.on("update", (values) => {
+    scanDurationMinutes = Number(values[0]);
+    renderTimePreview();
+  });
 
   function setBudget(v: number): void {
     budget = Math.max(0, Math.floor(v));
@@ -181,13 +235,10 @@ export function initBotCreateModal(): void {
   }
 
   function renderTimePreview(): void {
-    const h = Number(hourSelect.value);
-    const m = Number(minuteSelect.value);
-    const dur = Math.max(1, Number(durationInput.value) || 0);
-    const endTotal = h * 60 + m + dur;
+    const endTotal = scanStartHour * 60 + scanStartMinute + scanDurationMinutes;
     const endH = Math.floor(endTotal / 60) % 24;
     const endM = endTotal % 60;
-    timePreview.textContent = `${pad2(h)}:${pad2(m)} ~ ${pad2(endH)}:${pad2(endM)} (평일)`;
+    timePreview.textContent = `${pad2(scanStartHour)}:${pad2(scanStartMinute)} ~ ${pad2(endH)}:${pad2(endM)} (평일)`;
   }
 
   function showError(msg: string): void {
@@ -203,12 +254,11 @@ export function initBotCreateModal(): void {
   function resetForm(): void {
     setBotType(DEFAULT_BOT_SETTINGS.botType);
     setBudget(DEFAULT_BOT_SETTINGS.budgetKrw);
-    hourSelect.value = String(DEFAULT_BOT_SETTINGS.scanWindow.startHourKst);
-    minuteSelect.value = String(DEFAULT_BOT_SETTINGS.scanWindow.startMinute);
-    durationInput.value = String(DEFAULT_BOT_SETTINGS.scanWindow.durationMinutes);
+    // "update" 리스너가 상태/프리뷰까지 같이 갱신
+    startSlider.set(DEFAULT_BOT_SETTINGS.scanWindow.startHourKst * 60 + DEFAULT_BOT_SETTINGS.scanWindow.startMinute);
+    durationSlider.set(DEFAULT_BOT_SETTINGS.scanWindow.durationMinutes);
     tpInput.value = String(DEFAULT_BOT_SETTINGS.takeProfitRate * 100);
     slInput.value = String(DEFAULT_BOT_SETTINGS.stopLossRate * 100);
-    renderTimePreview();
   }
 
   // ── 열기/닫기 ──────────────────────────────────────────────
@@ -232,11 +282,6 @@ export function initBotCreateModal(): void {
       showError(`예산은 최소 ${krw(MIN_BUDGET_KRW)} 이상이어야 해요.`);
       return null;
     }
-    const durationMinutes = Math.floor(Number(durationInput.value));
-    if (!Number.isFinite(durationMinutes) || durationMinutes < 1 || durationMinutes > 1440) {
-      showError("동작 시간(분)은 1~1440 사이로 입력하세요.");
-      return null;
-    }
     const takeProfitPct = Number(tpInput.value);
     if (!Number.isFinite(takeProfitPct) || takeProfitPct <= 0) {
       showError("익절 %는 0보다 커야 해요.");
@@ -253,9 +298,9 @@ export function initBotCreateModal(): void {
       takeProfitRate: takeProfitPct / 100,
       stopLossRate: stopLossPct / 100,
       scanWindow: {
-        startHourKst: Number(hourSelect.value),
-        startMinute: Number(minuteSelect.value),
-        durationMinutes,
+        startHourKst: scanStartHour,
+        startMinute: scanStartMinute,
+        durationMinutes: scanDurationMinutes,
       },
     };
   }
@@ -275,10 +320,6 @@ export function initBotCreateModal(): void {
     const digits = budgetInput.value.replace(/[^0-9]/g, "");
     setBudget(digits ? Number(digits) : 0);
   });
-  hourSelect.addEventListener("change", renderTimePreview);
-  minuteSelect.addEventListener("change", renderTimePreview);
-  durationInput.addEventListener("input", renderTimePreview);
-
   createBtn.addEventListener("click", submit);
   cancelBtn.addEventListener("click", close);
   overlay.addEventListener("mousedown", (e) => {

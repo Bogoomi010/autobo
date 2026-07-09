@@ -286,6 +286,19 @@
         padding: 7px 12px;
         box-shadow: var(--shadow);
       }
+      .panel-head.collapsible {
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        user-select: none;
+      }
+      .panel-head.collapsible .chevron {
+        transition: transform 0.15s ease;
+      }
+      .panel-head.collapsible.collapsed .chevron {
+        transform: rotate(-90deg);
+      }
       #posList {
         flex: 1;
         min-height: 60px;
@@ -295,6 +308,9 @@
         gap: 8px;
         padding: 2px;
       }
+      #posList.collapsed {
+        display: none;
+      }
       #posList .empty {
         margin: auto;
         text-align: center;
@@ -302,6 +318,10 @@
         font-size: 13px;
         line-height: 1.7;
         opacity: 0.85;
+      }
+      .pos-card.bot {
+        background: var(--cream-2);
+        box-shadow: 0 3px 0 var(--wood);
       }
       .pos-card {
         background: var(--cream);
@@ -376,6 +396,10 @@
         left: 50%;
         width: 0;
         background: var(--mint);
+      }
+      .pos-card .pos-sell {
+        width: 100%;
+        margin-top: 2px;
       }
       .pos-gauge .fill.up { background: var(--up); }
       .pos-gauge .fill.down { background: var(--down); }
@@ -835,8 +859,7 @@
         font-size: 13px;
         color: var(--ink);
       }
-      #botCreateModal input,
-      #botCreateModal select {
+      #botCreateModal input {
         font-family: var(--font);
         font-size: 13px;
         color: var(--ink);
@@ -846,8 +869,7 @@
         padding: 9px 11px;
         outline: none;
       }
-      #botCreateModal input:focus,
-      #botCreateModal select:focus { border-color: var(--mint); }
+      #botCreateModal input:focus { border-color: var(--mint); }
       #botCreateModal .bcm-quick {
         display: flex;
         flex-wrap: wrap;
@@ -857,11 +879,57 @@
       #botCreateModal .bcm-section-label { font-size: 13px; color: var(--ink); margin-top: 2px; }
       #botCreateModal .bcm-time-row {
         display: flex;
-        align-items: center;
-        gap: 6px;
+        gap: 22px;
       }
-      #botCreateModal .bcm-time-row select { flex: none; }
-      #botCreateModal .bcm-time-row .bcm-duration { width: 70px; text-align: right; }
+      #botCreateModal .bcm-slider-block {
+        flex: 1;
+        min-width: 0;
+        padding: 30px 6px 40px;
+      }
+      #botCreateModal .bcm-slider-label {
+        font-size: 11px;
+        color: var(--wood);
+        margin-bottom: 4px;
+      }
+      /* 동작 시간대 슬라이더(noUiSlider) — 도트 게임 톤에 맞춰 기본 스킨을 다시 칠한다 */
+      #botCreateModal .bcm-time-slider.noUi-target {
+        background: var(--cream-2);
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        box-shadow: none;
+        height: 10px;
+      }
+      #botCreateModal .bcm-time-slider .noUi-connect {
+        background: var(--mint);
+        box-shadow: none;
+      }
+      #botCreateModal .bcm-time-slider .noUi-handle {
+        width: 18px;
+        height: 18px;
+        right: -11px;
+        top: -6px;
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        background: var(--coral);
+        box-shadow: 0 3px 0 var(--ink);
+        cursor: pointer;
+      }
+      #botCreateModal .bcm-time-slider .noUi-handle:before,
+      #botCreateModal .bcm-time-slider .noUi-handle:after {
+        display: none;
+      }
+      #botCreateModal .bcm-time-slider .noUi-handle:hover { background: var(--gold); }
+      #botCreateModal .bcm-time-slider .noUi-tooltip {
+        font-family: var(--font);
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--ink);
+        background: var(--cream);
+        border: 2px solid var(--ink);
+        border-radius: 2px;
+        padding: 2px 6px;
+        bottom: 24px;
+      }
       #botCreateModal .bcm-time-preview {
         font-size: 12px;
         color: var(--wood);

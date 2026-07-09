@@ -13,6 +13,7 @@ const DARK = 0x3d2a1a;
 const MINT = 0x7ed8c3;
 const CORAL = 0xf28f7a;
 const PAPER = 0xf5f5f0;
+const GOLD = 0xf2c14e;
 
 /** 픽셀 블록 하나 찍기 */
 function px(g: Phaser.GameObjects.Graphics, c: number, x: number, y: number, w = 1, h = 1): void {
@@ -133,6 +134,41 @@ function drawChar(
   }
 }
 
+/**
+ * 매수봇 로봇 뒷모습(책상 앞에 앉아 일하는 중) — native 16×24로, 캐릭터 프레임과
+ * 동일한 캔버스 크기/배율(CHAR_SCALE)을 써서 사용자 캐릭터와 같은 비율로 보이게 한다.
+ * 앉은 자세라 다리는 그리지 않고(책상에 가려짐) 등판+머리+팔만 표현한다.
+ */
+function drawBotRobot(g: Phaser.GameObjects.Graphics): void {
+  const STEEL = 0x9aa4af;
+  const STEEL_DARK = 0x6b7178;
+  const OUTLINE = 0x2b2f36;
+
+  // 안테나
+  px(g, OUTLINE, 7, 0, 1, 3);
+  px(g, CORAL, 6, 0, 3, 2);
+
+  // 머리(뒤통수) — 상단 민트 트림 + 가운데 이음선 + 옆 돌기
+  px(g, STEEL, 4, 3, 8, 7);
+  px(g, MINT, 4, 3, 8, 1);
+  px(g, OUTLINE, 7, 4, 1, 6);
+  px(g, STEEL_DARK, 3, 5, 1, 2);
+  px(g, STEEL_DARK, 12, 5, 1, 2);
+
+  // 몸통(등판) — 어깨 트림 + 팔 + 통풍구
+  px(g, STEEL, 3, 10, 10, 9);
+  px(g, STEEL_DARK, 3, 10, 1, 9);
+  px(g, STEEL_DARK, 12, 10, 1, 9);
+  px(g, MINT, 3, 10, 10, 1);
+  px(g, STEEL, 2, 11, 1, 6); // 왼팔
+  px(g, STEEL, 13, 11, 1, 6); // 오른팔
+  px(g, OUTLINE, 6, 15, 1, 2);
+  px(g, OUTLINE, 9, 15, 1, 2);
+
+  // 책상/의자에 가려질 하체 — 살짝만 표현
+  px(g, STEEL_DARK, 4, 19, 8, 3);
+}
+
 export function generateTextures(scene: Phaser.Scene): void {
   // ── 바닥 타일 (32×32) ──────────────────────────────
   // 로비: 우드 마루
@@ -161,6 +197,20 @@ export function generateTextures(scene: Phaser.Scene): void {
     px(g, 0x656d76, 0, 15, 32, 2);
     px(g, 0xb4bcc4, 2, 2, 3, 1);
     px(g, 0xb4bcc4, 18, 18, 3, 1);
+  });
+  // 매수봇 공간: 다크 슬레이트 타일 — 로봇 팔레트(스틸 그레이)와 겹쳐 보이지 않는 어두운 톤 + 민트 회로 트레이스
+  tex(scene, "floor_bot", 32, 32, (g) => {
+    px(g, 0x2b2f3a, 0, 0, 32, 32);
+    px(g, 0x333947, 0, 0, 16, 16);
+    px(g, 0x333947, 16, 16, 16, 16);
+    px(g, 0x1f2229, 15, 0, 2, 32);
+    px(g, 0x1f2229, 0, 15, 32, 2);
+    px(g, MINT, 2, 2, 6, 1);
+    px(g, MINT, 2, 2, 1, 6);
+    px(g, MINT, 18, 18, 6, 1);
+    px(g, MINT, 23, 13, 1, 6);
+    px(g, 0x454c5c, 8, 24, 3, 3);
+    px(g, 0x454c5c, 22, 6, 3, 3);
   });
   // 투자방: 민트 카펫 (4px 위브)
   tex(scene, "floor_carpet", 32, 32, (g) => {
@@ -317,6 +367,23 @@ export function generateTextures(scene: Phaser.Scene): void {
     px(g, 0x6bbf78, 9, 3, 4, 10);
   });
 
+  // ── 매수봇 성과 장식 (수익 낼수록 책상/로봇에 붙는다, botFloor.ts) ──
+  tex(scene, "trophy", 12, 14, (g) => {
+    px(g, GOLD, 2, 1, 8, 5); // 컵
+    px(g, 0xd99a1f, 2, 1, 8, 1);
+    px(g, GOLD, 1, 2, 1, 3); // 왼쪽 손잡이
+    px(g, GOLD, 10, 2, 1, 3); // 오른쪽 손잡이
+    px(g, 0xb9860f, 5, 6, 2, 3); // 기둥
+    px(g, 0xb9860f, 3, 9, 6, 2); // 받침
+  });
+  tex(scene, "crown", 14, 9, (g) => {
+    px(g, GOLD, 1, 4, 12, 4); // 띠
+    px(g, GOLD, 1, 1, 2, 4); // 왼쪽 뿔
+    px(g, GOLD, 6, 0, 2, 5); // 가운데 뿔(가장 높음)
+    px(g, GOLD, 11, 1, 2, 4); // 오른쪽 뿔
+    px(g, 0xe4553f, 6, 1, 2, 2); // 보석
+  });
+
   tex(scene, "clock", 18, 18, (g) => {
     g.fillStyle(DARK, 1);
     g.fillCircle(9, 9, 9);
@@ -367,4 +434,11 @@ export function generateTextures(scene: Phaser.Scene): void {
   tex(scene, "char_carry_down", 16, 24, (g) => drawChar(g, "down", 0, true));
   tex(scene, "char_carry_up", 16, 24, (g) => drawChar(g, "up", 0, true));
   tex(scene, "char_carry_side", 16, 24, (g) => drawChar(g, "side", 0, true));
+
+  // ── 매수봇 로봇(뒷모습, native 16×24) + 상태 표시등(6×6) ──
+  tex(scene, "bot_robot", 16, 24, drawBotRobot);
+  tex(scene, "status_dot", 6, 6, (g) => {
+    g.fillStyle(0xffffff, 1);
+    g.fillCircle(3, 3, 3);
+  });
 }

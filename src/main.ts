@@ -11,6 +11,7 @@ import { initWithdrawModal } from "./ui/withdrawModal";
 import { initTradingBoard } from "./ui/tradingBoard/board";
 import { initBotDock } from "./ui/botDock";
 import { initBotCreateModal } from "./ui/botCreateModal";
+import { initBotDetailModal } from "./ui/botDetailModal";
 import { botEngine } from "./bots/botEngine";
 import { chooseMode } from "./ui/modeModal";
 import { sfx } from "./core/sfx";
@@ -41,6 +42,7 @@ async function boot(): Promise<void> {
   initTradingBoard();
   initBotDock();
   initBotCreateModal();
+  initBotDetailModal();
 
   await store.init(); // 세이브 로드 + 실계좌 연동 (실거래+키 없으면 입력 모달 / 모의면 가상 잔고)
   investment.start(); // 마켓 목록 로드 + 시세 폴링 + 자동 익절/손절

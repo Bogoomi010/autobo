@@ -3,6 +3,7 @@ import {
   CrosshairMode,
   type IChartApi,
   type ISeriesApi,
+  type Logical,
   type LogicalRange,
   type UTCTimestamp,
   createChart,
@@ -11,6 +12,9 @@ import type { Candle } from "../../game/types";
 
 /** 왼쪽 끝에서 이만큼(봉 개수) 이내로 스크롤/줌하면 과거 데이터를 더 요청한다 */
 const LOAD_MORE_THRESHOLD_BARS = 30;
+
+/** 마지막 캔들 오른쪽에 남겨두는 여백(봉 개수) — timeScale.rightOffset과 동일한 값을 유지해야 한다 */
+const RIGHT_OFFSET_BARS = 2;
 
 /** 캔들+거래량 차트 인스턴스 — board.ts가 마켓/타임프레임 전환 시 setData, 실시간 틱마다 updateLast를 호출한다 */
 export interface PriceChart {
@@ -80,7 +84,7 @@ export function createPriceChart(container: HTMLElement, onNeedMoreHistory: () =
       borderColor: INK,
       // 최신 캔들이 항상 오른쪽 끝에 붙어 있도록 고정 — 그 너머(미래 방향)로는 스크롤/줌 불가.
       // 새 캔들이 추가될 때(updateLast)도 오른쪽 끝이 보이고 있었다면 자동으로 따라가며 갱신된다.
-      rightOffset: 2,
+      rightOffset: RIGHT_OFFSET_BARS,
       fixRightEdge: true,
       // 로드된 가장 오래된 캔들(최종적으로는 상장일 최초 캔들) 너머로는 스크롤/줌 불가.
       // onNeedMoreHistory가 이 경계에 닿기 전에 미리 과거 데이터를 이어붙이므로 평소엔 끊김이 느껴지지 않고,
@@ -118,6 +122,27 @@ export function createPriceChart(container: HTMLElement, onNeedMoreHistory: () =
   const handleVisibleRangeChange = (range: LogicalRange | null): void => {
     if (!range) return;
     if (range.from < LOAD_MORE_THRESHOLD_BARS) onNeedMoreHistory();
+
+    // fixLeftEdge/fixRightEdge는 스크롤(패닝)만 막고 마우스휠 줌아웃이 만드는 여백은 막지 못한다.
+    // 로드된 캔들 범위([0, 마지막+rightOffset])를 넘어가면 같은 폭을 유지한 채 즉시 되돌린다.
+    if (allCandles.length === 0) return;
+    const minFrom = 0;
+    const maxTo = allCandles.length - 1 + RIGHT_OFFSET_BARS;
+    let from: number = range.from;
+    let to: number = range.to;
+    if (to - from >= maxTo - minFrom) {
+      from = minFrom;
+      to = maxTo;
+    } else if (from < minFrom) {
+      to += minFrom - from;
+      from = minFrom;
+    } else if (to > maxTo) {
+      from -= to - maxTo;
+      to = maxTo;
+    }
+    if (from !== range.from || to !== range.to) {
+      chart.timeScale().setVisibleLogicalRange({ from: from as Logical, to: to as Logical });
+    }
   };
   chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
 

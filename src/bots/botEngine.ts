@@ -29,6 +29,7 @@ import {
   DEFAULT_BOT_ENGINE_CONFIG,
   DEFAULT_BOT_SETTINGS,
   type BotEngineConfig,
+  type BotLogEntry,
   type BotMarketLogEntry,
   type BotSettings,
   type BotTradeLogEntry,
@@ -39,6 +40,8 @@ import {
 } from "./types";
 
 const TICK_MS = 1000;
+// 월드 매수봇 상세 패널에 보여줄 인메모리 활동 로그 — CSV(§6)와 별개로 최근 N건만 유지한다
+const BOT_LOG_MAX = 30;
 const HISTORY_WINDOW_MS = 60_000; // 롤링 체결 이력 60초
 const SURGE_SCAN_INTERVAL_MS = 3000; // 급등 점수화 주기
 const MANUAL_SCAN_DURATION_MS = 5 * 60_000; // 수동 스캔 창 5분
@@ -59,10 +62,18 @@ const ENABLED_KEY = "coin_office_bots_enabled";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * 명단과 함께 영속화하는 항목. 진입가/보유수량 같은 "지금 이 순간의 포지션"은 여전히
+ * 영속화하지 않지만(재시작 시 실제 시세와 괴리될 위험), 누적 실현손익/거래 횟수/활동 로그는
+ * "쌓이는 데이터"라 프로그램이 언제 꺼질지 몰라도 잃지 않도록 매 변경마다 같이 저장한다.
+ */
 interface RosterEntry {
   id: string;
   name: string;
   settings: BotSettings;
+  realizedPnlKrw: number;
+  tradesDone: number;
+  logs: BotLogEntry[];
 }
 
 type KstParts = { weekday: number; hour: number; minute: number; minutesOfDay: number };
@@ -112,6 +123,13 @@ function isValidSettings(value: unknown): value is BotSettings {
   );
 }
 
+function isValidLogs(value: unknown): value is BotLogEntry[] {
+  return (
+    Array.isArray(value) &&
+    value.every((v) => !!v && typeof v === "object" && typeof (v as BotLogEntry).at === "number" && typeof (v as BotLogEntry).message === "string")
+  );
+}
+
 function loadRoster(): RosterEntry[] {
   try {
     const raw = localStorage.getItem(ROSTER_KEY);
@@ -119,8 +137,18 @@ function loadRoster(): RosterEntry[] {
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed
-      .filter((e): e is { id: string; name: string; settings?: unknown } => !!e && typeof e === "object" && typeof (e as RosterEntry).id === "string" && typeof (e as RosterEntry).name === "string")
-      .map((e) => ({ id: e.id, name: e.name, settings: isValidSettings(e.settings) ? e.settings : DEFAULT_BOT_SETTINGS }));
+      .filter(
+        (e): e is { id: string; name: string; settings?: unknown; realizedPnlKrw?: unknown; tradesDone?: unknown; logs?: unknown } =>
+          !!e && typeof e === "object" && typeof (e as RosterEntry).id === "string" && typeof (e as RosterEntry).name === "string"
+      )
+      .map((e) => ({
+        id: e.id,
+        name: e.name,
+        settings: isValidSettings(e.settings) ? e.settings : DEFAULT_BOT_SETTINGS,
+        realizedPnlKrw: typeof e.realizedPnlKrw === "number" ? e.realizedPnlKrw : 0,
+        tradesDone: typeof e.tradesDone === "number" ? e.tradesDone : 0,
+        logs: isValidLogs(e.logs) ? e.logs : [],
+      }));
   } catch {
     return [];
   }
@@ -128,7 +156,14 @@ function loadRoster(): RosterEntry[] {
 
 function saveRoster(bots: TradeBot[]): void {
   try {
-    const roster: RosterEntry[] = bots.map((b) => ({ id: b.id, name: b.name, settings: b.settings }));
+    const roster: RosterEntry[] = bots.map((b) => ({
+      id: b.id,
+      name: b.name,
+      settings: b.settings,
+      realizedPnlKrw: b.realizedPnlKrw,
+      tradesDone: b.tradesDone,
+      logs: b.logs,
+    }));
     localStorage.setItem(ROSTER_KEY, JSON.stringify(roster));
   } catch {
     // localStorage 불가 환경은 조용히 무시
@@ -154,6 +189,7 @@ function makeBot(id: string, name: string, settings: BotSettings): TradeBot {
     lastActionAt: null,
     realizedPnlKrw: 0,
     tradesDone: 0,
+    logs: [],
   };
 }
 
@@ -193,7 +229,13 @@ function uid(): string {
 }
 
 class BotEngine {
-  private bots: TradeBot[] = loadRoster().map((r) => makeBot(r.id, r.name, r.settings));
+  // 런타임 포지션(진입가/수량 등)은 그대로 초기화하되, 누적 실현손익/거래 횟수/활동 로그는 명단과 함께 복원한다
+  private bots: TradeBot[] = loadRoster().map((r) => ({
+    ...makeBot(r.id, r.name, r.settings),
+    realizedPnlKrw: r.realizedPnlKrw,
+    tradesDone: r.tradesDone,
+    logs: r.logs,
+  }));
   private config: BotEngineConfig = DEFAULT_BOT_ENGINE_CONFIG;
   private enabled = localStorage.getItem(ENABLED_KEY) === "1";
   private scanActive = false;
@@ -396,6 +438,13 @@ class BotEngine {
     this.notify();
   }
 
+  /** botId의 현재 로그에 한 줄 추가(최대 BOT_LOG_MAX건 유지) — this.bots를 그때그때 조회해 항상 최신 로그 위에 이어붙인다 */
+  private appendLogFor(botId: string, message: string): BotLogEntry[] {
+    const logs = this.bots.find((b) => b.id === botId)?.logs ?? [];
+    const next = [...logs, { at: Date.now(), message }];
+    return next.length > BOT_LOG_MAX ? next.slice(next.length - BOT_LOG_MAX) : next;
+  }
+
   private getCurrentPrice(market: string): number | null {
     const snap = this.latestSnapshots[market];
     if (snap && snap.last_trade_price > 0) return snap.last_trade_price;
@@ -423,13 +472,21 @@ class BotEngine {
     }
 
     if (store.mode === "real" && !store.connected) {
-      this.patchBot(botId, { state: "scanning", lastMessage: "키 미연동으로 대기" });
+      this.patchBot(botId, {
+        state: "scanning",
+        lastMessage: "키 미연동으로 대기",
+        logs: this.appendLogFor(botId, "⚠️ 키 미연동으로 매수 대기"),
+      });
       this.inFlight.delete(botId);
       return;
     }
 
     if (this.buyHaltedByDailyLoss) {
-      this.patchBot(botId, { state: "scanning", lastMessage: "일일 손실 한도로 매수 중단" });
+      this.patchBot(botId, {
+        state: "scanning",
+        lastMessage: "일일 손실 한도로 매수 중단",
+        logs: this.appendLogFor(botId, "🛑 일일 손실 한도로 매수 중단"),
+      });
       this.inFlight.delete(botId);
       return;
     }
@@ -440,6 +497,7 @@ class BotEngine {
       targetNameKo: nameKo,
       lastMessage: `${market} 매수 시도...`,
       lastActionAt: Date.now(),
+      logs: this.appendLogFor(botId, `🛒 ${nameKo ?? market} 매수 시도`),
     });
 
     // 동일 시도에 대해 고정된 identifier — 업비트 측에서 같은 identifier 재요청을 중복 주문으로 거부하게 한다
@@ -482,7 +540,12 @@ class BotEngine {
 
         if (!entryPrice || !volume || entryPrice <= 0 || volume <= 0) {
           if (store.mode === "real") this.registerApiError();
-          this.patchBot(botId, { state: "error", lastMessage: "체결 수량 확인 실패", lastActionAt: Date.now() });
+          this.patchBot(botId, {
+            state: "error",
+            lastMessage: "체결 수량 확인 실패",
+            lastActionAt: Date.now(),
+            logs: this.appendLogFor(botId, `❌ ${nameKo ?? market} 매수 실패 — 체결 수량 확인 실패`),
+          });
           bus.emit(EV.TOAST, `🤖 ${bot.name}: ${market} 체결 수량 확인 실패`, "bad");
           return;
         }
@@ -502,6 +565,7 @@ class BotEngine {
           currentPnlRate: 0,
           lastMessage: `${nameKo ?? market} 매수!`,
           lastActionAt: Date.now(),
+          logs: this.appendLogFor(botId, `✅ ${nameKo ?? market} 매수 완료 @ ${krw(entryPrice)} (${krw(bot.settings.budgetKrw)})`),
         });
         bus.emit(EV.TOAST, `🤖 ${bot.name} → ${nameKo ?? market} ${store.mode === "sim" ? "[모의] " : ""}매수`, "good");
         this.logTrade({
@@ -522,7 +586,12 @@ class BotEngine {
         });
       } catch (err) {
         if (store.mode === "real") this.registerApiError();
-        this.patchBot(botId, { state: "error", lastMessage: `매수 오류: ${String(err)}`, lastActionAt: Date.now() });
+        this.patchBot(botId, {
+          state: "error",
+          lastMessage: `매수 오류: ${String(err)}`,
+          lastActionAt: Date.now(),
+          logs: this.appendLogFor(botId, `❌ 매수 오류: ${String(err)}`),
+        });
         bus.emit(EV.TOAST, `🤖 ${bot.name}: 매수 오류`, "bad");
       } finally {
         this.inFlight.delete(botId);
@@ -556,6 +625,7 @@ class BotEngine {
       state: "selling",
       lastMessage: startMessage,
       lastActionAt: Date.now(),
+      logs: this.appendLogFor(botId, `📤 ${bot.targetNameKo ?? market} ${startMessage}`),
     });
 
     // 익절/손절 매도는 리스크 방어 목적이므로 매수와 달리 일일 손실 한도로 막지 않는다
@@ -589,6 +659,10 @@ class BotEngine {
           tradesDone: bot.tradesDone + 1,
           lastMessage: `${pnlRate >= 0 ? "+" : ""}${(pnlRate * 100).toFixed(1)}% ${reasonLabel}!`,
           lastActionAt: Date.now(),
+          logs: this.appendLogFor(
+            botId,
+            `${pnlRate >= 0 ? "💰" : "📉"} ${bot.targetNameKo ?? market} ${reasonLabel} @ ${krw(currentPrice)} — ${pnlRate >= 0 ? "+" : ""}${(pnlRate * 100).toFixed(2)}% (${krw(realized)})`
+          ),
         });
         bus.emit(
           EV.TOAST,
@@ -613,7 +687,12 @@ class BotEngine {
         });
       } catch (err) {
         if (store.mode === "real") this.registerApiError();
-        this.patchBot(botId, { state: "error", lastMessage: `매도 오류: ${String(err)}`, lastActionAt: Date.now() });
+        this.patchBot(botId, {
+          state: "error",
+          lastMessage: `매도 오류: ${String(err)}`,
+          lastActionAt: Date.now(),
+          logs: this.appendLogFor(botId, `❌ 매도 오류: ${String(err)}`),
+        });
         bus.emit(EV.TOAST, `🤖 ${bot.name}: 매도 오류`, "bad");
       } finally {
         this.inFlight.delete(botId);
@@ -824,6 +903,7 @@ class BotEngine {
           targetMarket: cand.market,
           targetNameKo: coin?.nameKo ?? null,
           lastMessage: `${coin?.nameKo ?? cand.market} 조준! (${cand.reasons[0]})`,
+          logs: this.appendLogFor(bot.id, `🎯 ${coin?.nameKo ?? cand.market} 후보 조준 (${cand.reasons[0]})`),
         });
         this.executeBuy(bot.id, cand.market, coin?.nameKo ?? null);
       }

@@ -4,6 +4,7 @@ import { bus, EV } from "../game/events";
 import { store } from "../game/state";
 import type { ClosedTrade, Payout } from "../game/types";
 import { sfx } from "../core/sfx";
+import { BotFloor } from "./botFloor";
 
 const WORLD_TOP = 64; // 상단 DOM HUD 영역
 const CHAR_SCALE = 2;
@@ -23,6 +24,15 @@ const ROOM_Y0 = 96;
 const ROOM_Y1 = 688;
 const DOOR_Y0 = 320;
 const DOOR_Y1 = 432;
+
+// 금고실(작은 방) — 로비 우측 상단 구석, 트레이딩 시세판 오른쪽에 벽으로 구분해 배치.
+// 위쪽·오른쪽은 건물 외벽/로비-투자방 칸막이를 그대로 재사용하고, 왼쪽·아래쪽만 새로 벽을 세운다.
+const SAFE2_X0 = 712;
+const SAFE2_X1 = LOBBY_X1; // 832 — 로비-투자방 칸막이를 그대로 오른쪽 벽으로 재사용
+const SAFE2_Y0 = ROOM_Y0; // 96 — 건물 상단 외벽을 그대로 위쪽 벽으로 재사용
+const SAFE2_Y1 = 224;
+const SAFE2_DOOR_Y0 = 160; // 왼쪽 벽 아래쪽을 출입구로 비워둔다
+const SAFE2_DOOR_Y1 = SAFE2_Y1;
 
 type Nearest =
   | { type: "safe" | "terminal" | "board" | "money"; id?: string; ax: number; ay: number }
@@ -57,6 +67,7 @@ export class OfficeScene extends Phaser.Scene {
   private bubble!: Phaser.GameObjects.Container;
   private nearest: Nearest = null;
   private lastStepTime = 0;
+  private botFloor!: BotFloor;
 
   // 정산기 배출구 월드 좌표
   private readonly dispenseX = 1140;
@@ -66,6 +77,8 @@ export class OfficeScene extends Phaser.Scene {
   private onModalClosed!: (invested: boolean) => void;
   private onWithdrawModalClosed!: () => void;
   private onTradingBoardClosed!: () => void;
+  private onBotDetailOpened!: () => void;
+  private onBotDetailClosed!: () => void;
 
   constructor() {
     super("Office");
@@ -78,6 +91,7 @@ export class OfficeScene extends Phaser.Scene {
     this.buildLabels();
     this.buildPlayer();
     this.buildUi();
+    this.botFloor = new BotFloor(this);
 
     this.physics.world.setBounds(0, WORLD_TOP, GAME_W, GAME_H - WORLD_TOP);
     this.player.setCollideWorldBounds(true);
@@ -102,7 +116,7 @@ export class OfficeScene extends Phaser.Scene {
     }
 
     // bus 리스너
-    this.onTradeClosed = (_trade, payout) => this.dispensePayout(payout);
+    this.onTradeClosed = (trade, payout) => this.dispensePayout(payout, trade.pnlRate);
     this.onModalClosed = (invested) => {
       this.mode = "play";
       if (invested) sfx.power();
@@ -113,28 +127,52 @@ export class OfficeScene extends Phaser.Scene {
     this.onTradingBoardClosed = () => {
       this.mode = "play";
     };
+    // 매수봇 로봇 클릭(botFloor.ts) → 상세 패널이 뜨는 동안 이동/상호작용을 막는다
+    this.onBotDetailOpened = () => {
+      this.mode = "modal";
+      this.player.setVelocity(0, 0);
+      this.bubble.setVisible(false);
+    };
+    this.onBotDetailClosed = () => {
+      this.mode = "play";
+    };
     bus.on(EV.TRADE_CLOSED, this.onTradeClosed);
     bus.on(EV.COIN_MODAL_CLOSED, this.onModalClosed);
     bus.on(EV.WITHDRAW_MODAL_CLOSED, this.onWithdrawModalClosed);
     bus.on(EV.TRADING_BOARD_CLOSED, this.onTradingBoardClosed);
+    bus.on(EV.OPEN_BOT_DETAIL, this.onBotDetailOpened);
+    bus.on(EV.BOT_DETAIL_CLOSED, this.onBotDetailClosed);
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       bus.off(EV.TRADE_CLOSED, this.onTradeClosed);
       bus.off(EV.COIN_MODAL_CLOSED, this.onModalClosed);
       bus.off(EV.WITHDRAW_MODAL_CLOSED, this.onWithdrawModalClosed);
       bus.off(EV.TRADING_BOARD_CLOSED, this.onTradingBoardClosed);
+      bus.off(EV.OPEN_BOT_DETAIL, this.onBotDetailOpened);
+      bus.off(EV.BOT_DETAIL_CLOSED, this.onBotDetailClosed);
+      this.botFloor.destroy();
     });
   }
 
   // ── 월드 빌드 ────────────────────────────────────
   private buildFloors(): void {
     const h = ROOM_Y1 - ROOM_Y0;
-    this.add.tileSprite(SAFE_X0, ROOM_Y0, SAFE_X1 - SAFE_X0, h, "floor_steel").setOrigin(0, 0).setDepth(0);
+    // 매수봇 공간 — 로봇 팔레트(스틸 그레이)와 안 겹치도록 어두운 전용 타일을 쓴다
+    this.add.tileSprite(SAFE_X0, ROOM_Y0, SAFE_X1 - SAFE_X0, h, "floor_bot").setOrigin(0, 0).setDepth(0);
     this.add.tileSprite(LOBBY_X0, ROOM_Y0, LOBBY_X1 - LOBBY_X0, h, "floor_wood").setOrigin(0, 0).setDepth(0);
     this.add.tileSprite(INV_X0, ROOM_Y0, INV_X1 - INV_X0, h, "floor_carpet").setOrigin(0, 0).setDepth(0);
+    // 금고실(작은 방) 바닥 — 로비 바닥 위에 겹쳐 그려 방 구획을 시각적으로 분리한다
+    this.add
+      .tileSprite(SAFE2_X0, SAFE2_Y0, SAFE2_X1 - SAFE2_X0, SAFE2_Y1 - SAFE2_Y0, "floor_steel")
+      .setOrigin(0, 0)
+      .setDepth(0);
     // 문 개구부 러그
     this.add.tileSprite(SAFE_X1, DOOR_Y0, 32, DOOR_Y1 - DOOR_Y0, "door_rug").setOrigin(0, 0).setDepth(1);
     this.add.tileSprite(LOBBY_X1, DOOR_Y0, 32, DOOR_Y1 - DOOR_Y0, "door_rug").setOrigin(0, 0).setDepth(1);
+    this.add
+      .tileSprite(SAFE2_X0, SAFE2_DOOR_Y0, 32, SAFE2_DOOR_Y1 - SAFE2_DOOR_Y0, "door_rug")
+      .setOrigin(0, 0)
+      .setDepth(1);
   }
 
   private addWall(x: number, y: number, w: number, h: number): void {
@@ -155,6 +193,9 @@ export class OfficeScene extends Phaser.Scene {
       this.addWall(dx, ROOM_Y0, 32, DOOR_Y0 - ROOM_Y0);
       this.addWall(dx, DOOR_Y1, 32, ROOM_Y1 - DOOR_Y1);
     }
+    // 금고실(작은 방) 칸막이 — 왼쪽 벽 위쪽(출입구 위)과 아래쪽 벽만 새로 세운다
+    this.addWall(SAFE2_X0, SAFE2_Y0, 32, SAFE2_DOOR_Y0 - SAFE2_Y0);
+    this.addWall(SAFE2_X0, SAFE2_Y1, SAFE2_X1 - SAFE2_X0, 32);
   }
 
   /** 보이지 않는 충돌 박스 (가구 하단 발치) */
@@ -165,10 +206,11 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private buildFurniture(): void {
-    // 금고 (금고방)
-    this.add.image(224, 268, "safe").setDepth(304);
-    this.addSolid(224, 268, 58, 62);
-    this.interactables.push({ type: "safe", ax: 224, ay: 322 });
+    // 금고 — 거실 트레이딩 시세판 오른쪽, 새로 낸 작은 금고실 안에 배치 (왼쪽 방은 추후 매수봇 작업 공간으로 리모델링 예정)
+    const SAFE_SCALE = CHAR_SCALE * 0.6;
+    this.add.image(785, 150, "safe").setScale(SAFE_SCALE).setDepth(186);
+    this.addSolid(785, 150, 35, 37);
+    this.interactables.push({ type: "safe", ax: 785, ay: 200 });
 
     // 코인 단말기 (투자방)
     this.add.image(990, 250, "terminal").setDepth(276);
@@ -188,7 +230,7 @@ export class OfficeScene extends Phaser.Scene {
     this.add.image(560, 180, "desk").setDepth(192);
     this.addSolid(560, 184, 38, 16);
     this.add.image(560, 224, "chair").setDepth(235);
-    this.add.image(742, 112, "clock").setScale(CHAR_SCALE).setDepth(160);
+    this.add.image(520, 112, "clock").setScale(CHAR_SCALE).setDepth(160);
 
     // 화분 (아기자기, 충돌 없음)
     for (const [x, y] of [
@@ -204,7 +246,8 @@ export class OfficeScene extends Phaser.Scene {
 
   private buildLabels(): void {
     const style: Phaser.Types.GameObjects.Text.TextStyle = {
-      fontFamily: "monospace",
+      // 순수 "monospace"만 쓰면 한글 글리프가 없는 폰트로 매칭돼 깨져 보일 수 있어 한글 폰트를 명시한다
+      fontFamily: '"Malgun Gothic", monospace',
       fontSize: "16px",
       fontStyle: "bold",
       color: "#3d2a1a",
@@ -212,9 +255,10 @@ export class OfficeScene extends Phaser.Scene {
     const label = (x: number, y: number, txt: string): void => {
       this.add.text(x, y, txt, style).setOrigin(0.5).setAlpha(0.5).setDepth(1);
     };
-    label(224, 655, "🔐 금고방");
+    label(224, 655, "🤖 매수봇 공간");
     label(640, 668, "🏢 로비");
     label(1056, 655, "📈 투자방");
+    label(785, 210, "🔐 금고");
   }
 
   private buildPlayer(): void {
@@ -400,8 +444,9 @@ export class OfficeScene extends Phaser.Scene {
     return { tx: Phaser.Math.Clamp(tx, INV_X0 + 20, INV_X1 - 20), ty: Phaser.Math.Clamp(ty, 530, ROOM_Y1 - 20) };
   }
 
-  private dispensePayout(payout: Payout): void {
-    const isWin = payout.reason === "take-profit";
+  private dispensePayout(payout: Payout, pnlRate: number): void {
+    // 익절/손절/수동 매도 모두 실제 손익 부호로 승패를 가른다(수동 매도도 이득이면 승리 연출)
+    const isWin = pnlRate >= 0;
     const sx = this.dispenseX;
     const sy = this.dispenseY;
     const { tx, ty } = this.nextSlot();

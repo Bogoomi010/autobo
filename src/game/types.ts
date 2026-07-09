@@ -54,7 +54,8 @@ export interface ClosedTrade {
   payout: number;
   /** 확정 수익률 */
   pnlRate: number;
-  reason: "take-profit" | "stop-loss";
+  /** manual = 사용자가 자동 익절/손절을 기다리지 않고 직접 매도 */
+  reason: "take-profit" | "stop-loss" | "manual";
   closedAt: number;
 }
 
@@ -62,7 +63,7 @@ export interface ClosedTrade {
 export interface Payout {
   id: string;
   amount: number;
-  reason: "take-profit" | "stop-loss";
+  reason: "take-profit" | "stop-loss" | "manual";
 }
 
 /** 정규화된 캔들(OHLCV) — 업비트 분/초/일/주/월 캔들 응답을 공통 형태로 변환한 값 */

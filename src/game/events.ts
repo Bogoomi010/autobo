@@ -53,6 +53,10 @@ export const EV = {
   BOTS_CHANGED: "bots-changed",
   /** (없음) 봇 생성 창 열기 — 예산/동작 시간대/익절·손절 %를 입력받아 botEngine.addBot 호출 */
   OPEN_BOT_CREATE_MODAL: "open-bot-create-modal",
+  /** (botId: string) 월드 → UI: 매수봇 로봇 클릭 → 상세(현재 코인/실시간 수익률/투자 로그) 패널 열기 */
+  OPEN_BOT_DETAIL: "open-bot-detail",
+  /** (없음) UI → 월드: 매수봇 상세 패널 닫힘 */
+  BOT_DETAIL_CLOSED: "bot-detail-closed",
 } as const;
 
 // 타입 참조 유지용 (페이로드 계약 문서화)

@@ -27,8 +27,16 @@ idle → scanning → targeting → buying → holding → selling → sold_prof
 - `sold_profit`/`sold_loss`: 매도 완료, 10초(`SOLD_COOLDOWN_MS`) 쿨다운 후 `idle`로 복귀.
 - `error`: 매수/매도 실패, 30초(`ERROR_RECOVER_MS`) 후 `idle`로 복귀.
 
-포지션(진입가/수량/보유시간 등)은 앱 재시작 시 초기화된다. 영속화되는 건 로봇 명단
-(`id`/`name`/`settings`)뿐이다(`localStorage` 키 `coin_office_bots_roster`).
+포지션(진입가/수량 등 "지금 이 순간의 보유 상태")은 앱 재시작 시 초기화된다 — 재시작 시점의
+실제 시세와 괴리될 위험이 있어 의도적으로 복원하지 않는다. 반면 "쌓이는 데이터"인 누적
+실현손익(`realizedPnlKrw`)·거래 횟수(`tradesDone`)·활동 로그(`logs`)는 명단(`id`/`name`/`settings`)과
+함께 매 변경마다 그대로 저장돼(`localStorage` 키 `coin_office_bots_roster`) 앱을 언제 종료해도
+잃지 않는다. 재시작 후에는 봇이 `idle`로 돌아가 있지만 누적 지표와 로그는 이어진다.
+
+`TradeBot.logs`(`BotLogEntry[]`)는 조준/매수/매도/오류 등 주요 상태 전환 시각에 한 줄씩 쌓는
+활동 로그다(`BotEngine.appendLogFor`, 최근 `BOT_LOG_MAX`=30건만 유지). §6의 CSV와는 별도로,
+왼쪽 방 매수봇 로봇을 클릭했을 때 뜨는 상세 패널(`botDetailModal.ts`)에서 "어떻게 투자했는지"를
+바로 훑어보는 용도다.
 
 ---
 

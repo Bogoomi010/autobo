@@ -4,6 +4,7 @@
  * (선택 결과로 store.setMode → store.init 을 호출해야 HUD가 올바른 모드로 뜬다)
  */
 import { isTauri } from "../core/platform";
+import { sfx } from "../core/sfx";
 
 export function chooseMode(): Promise<"sim" | "real"> {
   return new Promise((resolve) => {
@@ -62,7 +63,13 @@ export function chooseMode(): Promise<"sim" | "real"> {
       resolve(mode);
     }
 
-    simBtn.addEventListener("click", () => pick("sim"));
-    realBtn.addEventListener("click", () => pick("real"));
+    simBtn.addEventListener("click", () => {
+      sfx.card();
+      pick("sim");
+    });
+    realBtn.addEventListener("click", () => {
+      sfx.alarm();
+      pick("real");
+    });
   });
 }

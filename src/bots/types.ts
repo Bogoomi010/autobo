@@ -53,6 +53,14 @@ export interface TradeBot {
   lastActionAt: number | null;
   realizedPnlKrw: number;
   tradesDone: number;
+  /** 최근 활동 로그(조준/매수/매도/오류) — 메모리에만 유지, 최대 BOT_LOG_MAX건. 월드 매수봇 상세 패널용 */
+  logs: BotLogEntry[];
+}
+
+/** 매수봇 활동 로그 1건 — CSV(§6)와 별개로, 월드에서 바로 훑어볼 수 있는 짧은 인메모리 이력 */
+export interface BotLogEntry {
+  at: number;
+  message: string;
 }
 
 /** 스캔 창(급등 탐지 시간대) 설정 */
