@@ -165,3 +165,69 @@ export function scoreSurgeCandidates(inputs: SurgeInputs): SurgeScore[] {
   results.sort((a, b) => b.score - a.score);
   return results;
 }
+
+// ---- 하락(붕괴) 감지 — 진입 점수화의 반전판. 보유 중 추세가 꺾이는 조기 신호를 잡는 데 쓴다 ----
+// (단타봇/장투봇 공통 — 각자 매도 판정을 여는 시점을 지난 뒤부터 적용된다)
+//
+// 붕괴 점수 = 가중합(0~100). 진입 점수의 3개 성분을 반대로 해석한다.
+//   1) 고점 대비 되돌림        retracement     가중치 0.45 (등락률의 반대편)
+//   2) 체결대금 감속           decel           가중치 0.30 (가속도의 반대편)
+//   3) 매도 체결 우위 전환      askDominance    가중치 0.25 (매수비중의 반대편)
+// 임계값(COLLAPSE_THRESHOLD) 이상이면 조기 매도 신호로 판단한다. 고정 익절/손절과는 별개의 보조 신호.
+
+export const COLLAPSE_WEIGHTS = {
+  retrace: 0.45,
+  decel: 0.3,
+  askDominance: 0.25,
+} as const;
+
+/** 붕괴 점수 임계값(0~100) */
+export const COLLAPSE_THRESHOLD = 25;
+
+const RETRACE_FULL = 0.015; // 진입 후 최고가 대비 -1.5% 되돌림이면 만점
+const DECEL_FULL = 0.3; // 최근30초/직전30초 체결대금 비율이 0.3배 이하로 급감하면 만점
+
+export interface CollapseInputs {
+  /** 매수 이후 관측된 최고가 */
+  peakPrice: number;
+  currentPrice: number;
+  /** 마켓별 롤링 체결 스냅샷 이력(scoreSurgeCandidates와 동일한 이력 사용) */
+  history: TradeVolumeSnapshot[] | undefined;
+  now?: number;
+}
+
+export interface CollapseScore {
+  score: number;
+  retracement: number;
+  tradeValueAccel: number;
+  bidRatio: number;
+  reasons: string[];
+}
+
+/** 급등 진입 후 하락 반전 조짐을 점수화 — scoreSurgeCandidates의 3개 지표를 반대로 해석한다 */
+export function scoreCollapse(inputs: CollapseInputs): CollapseScore {
+  const { peakPrice, currentPrice, history, now = Date.now() } = inputs;
+  const accel = computeTradeValueAccel(history, now);
+  const bidRatio = computeBidRatio(history);
+  const retracement = peakPrice > 0 ? Math.max(0, (peakPrice - currentPrice) / peakPrice) : 0;
+
+  const nRetrace = clamp(retracement / RETRACE_FULL, 0, 1);
+  const nDecel = clamp((1 - accel) / (1 - DECEL_FULL), 0, 1);
+  const nAskDominance = clamp((0.5 - bidRatio) * 2, 0, 1);
+
+  const score =
+    (COLLAPSE_WEIGHTS.retrace * nRetrace + COLLAPSE_WEIGHTS.decel * nDecel + COLLAPSE_WEIGHTS.askDominance * nAskDominance) *
+    100;
+
+  return {
+    score,
+    retracement,
+    tradeValueAccel: accel,
+    bidRatio,
+    reasons: [
+      `고점 대비 -${(retracement * 100).toFixed(2)}% 되돌림`,
+      `체결대금 가속 ${accel.toFixed(2)}배(감속)`,
+      `매수체결 ${(bidRatio * 100).toFixed(0)}%(매도 우위 전환)`,
+    ],
+  };
+}

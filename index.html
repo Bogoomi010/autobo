@@ -807,6 +807,84 @@
       }
       #keyModal .km-actions .pixel-btn { flex: 1; }
 
+      /* 매수봇 생성 모달 ---------------------------------------------------- */
+      #botCreateModal {
+        position: absolute;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(26, 20, 16, 0.62);
+        pointer-events: auto;
+        z-index: 90;
+      }
+      #botCreateModal.open { display: flex; }
+      #botCreateModal .bcm-panel {
+        width: 460px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 20px 22px;
+      }
+      #botCreateModal .bcm-title { font-size: 19px; color: var(--ink); }
+      #botCreateModal .bcm-desc { font-size: 12px; color: var(--wood); line-height: 1.6; }
+      #botCreateModal label {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 13px;
+        color: var(--ink);
+      }
+      #botCreateModal input,
+      #botCreateModal select {
+        font-family: var(--font);
+        font-size: 13px;
+        color: var(--ink);
+        background: #fff;
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        padding: 9px 11px;
+        outline: none;
+      }
+      #botCreateModal input:focus,
+      #botCreateModal select:focus { border-color: var(--mint); }
+      #botCreateModal .bcm-quick {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      #botCreateModal .bcm-quick .pixel-btn { flex: 1 1 auto; }
+      #botCreateModal .bcm-section-label { font-size: 13px; color: var(--ink); margin-top: 2px; }
+      #botCreateModal .bcm-time-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      #botCreateModal .bcm-time-row select { flex: none; }
+      #botCreateModal .bcm-time-row .bcm-duration { width: 70px; text-align: right; }
+      #botCreateModal .bcm-time-preview {
+        font-size: 12px;
+        color: var(--wood);
+        background: var(--cream-2);
+        border: 3px solid var(--ink);
+        border-radius: 2px;
+        padding: 7px 10px;
+      }
+      #botCreateModal .bcm-pct-row { display: flex; gap: 10px; }
+      #botCreateModal .bcm-pct-row label { flex: 1; }
+      #botCreateModal .bcm-error {
+        display: none;
+        font-size: 12px;
+        color: var(--up);
+        background: #fdeeee;
+        border: 3px solid var(--up);
+        border-radius: 2px;
+        padding: 8px 10px;
+      }
+      #botCreateModal .bcm-error.on { display: block; }
+      #botCreateModal .bcm-actions { display: flex; gap: 10px; margin-top: 2px; }
+      #botCreateModal .bcm-actions .pixel-btn { flex: 1; }
+
       /* 투자 확인 화면 ---------------------------------------------------- */
       #cmConfirm {
         display: none;
