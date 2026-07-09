@@ -80,7 +80,7 @@ function lightColor(bot: TradeBot): number {
 
 interface BotRec {
   desk: Phaser.GameObjects.Image;
-  robot: Phaser.GameObjects.Image;
+  robot: Phaser.GameObjects.Sprite;
   light: Phaser.GameObjects.Image;
   blinkTween: Phaser.Tweens.Tween | null;
   robotX: number;
@@ -210,10 +210,11 @@ export class BotFloor {
 
     const desk = this.scene.add.image(x, y, "desk").setDepth(y + 12);
     const robot = this.scene.add
-      .image(robotX, robotY, "bot_robot")
+      .sprite(robotX, robotY, "bot_robot_0")
       .setScale(CHAR_SCALE)
       .setDepth(robotY)
       .setInteractive({ useHandCursor: true });
+    robot.play("bot-working");
     const light = this.scene.add.image(robotX + 2, robotY - 36, "status_dot").setDepth(20000);
 
     robot.on("pointerover", () => this.showTooltip(bot.id));

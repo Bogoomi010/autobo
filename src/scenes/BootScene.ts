@@ -26,6 +26,14 @@ export class BootScene extends Phaser.Scene {
     walk("walk-up", "char_up");
     walk("walk-side", "char_side"); // 좌향은 씬에서 flipX
 
+    // 매수봇 타이핑 루프 — 좌우 팔이 번갈아 눌리는 2프레임을 느리게 반복해 "일하는 중" 느낌을 낸다
+    this.anims.create({
+      key: "bot-working",
+      frames: [{ key: "bot_robot_0" }, { key: "bot_robot_1" }],
+      frameRate: 3,
+      repeat: -1,
+    });
+
     this.scene.start("Office");
   }
 }

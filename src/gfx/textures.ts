@@ -138,8 +138,9 @@ function drawChar(
  * 매수봇 로봇 뒷모습(책상 앞에 앉아 일하는 중) — native 16×24로, 캐릭터 프레임과
  * 동일한 캔버스 크기/배율(CHAR_SCALE)을 써서 사용자 캐릭터와 같은 비율로 보이게 한다.
  * 앉은 자세라 다리는 그리지 않고(책상에 가려짐) 등판+머리+팔만 표현한다.
+ * frame(0/1) — 좌우 팔이 번갈아 1px씩 눌리며 키보드를 타이핑하는 것처럼 보이게 하는 2프레임 루프용.
  */
-function drawBotRobot(g: Phaser.GameObjects.Graphics): void {
+function drawBotRobot(g: Phaser.GameObjects.Graphics, frame: number): void {
   const STEEL = 0x9aa4af;
   const STEEL_DARK = 0x6b7178;
   const OUTLINE = 0x2b2f36;
@@ -155,15 +156,19 @@ function drawBotRobot(g: Phaser.GameObjects.Graphics): void {
   px(g, STEEL_DARK, 3, 5, 1, 2);
   px(g, STEEL_DARK, 12, 5, 1, 2);
 
-  // 몸통(등판) — 어깨 트림 + 팔 + 통풍구
+  // 몸통(등판) — 어깨 트림 + 통풍구
   px(g, STEEL, 3, 10, 10, 9);
   px(g, STEEL_DARK, 3, 10, 1, 9);
   px(g, STEEL_DARK, 12, 10, 1, 9);
   px(g, MINT, 3, 10, 10, 1);
-  px(g, STEEL, 2, 11, 1, 6); // 왼팔
-  px(g, STEEL, 13, 11, 1, 6); // 오른팔
   px(g, OUTLINE, 6, 15, 1, 2);
   px(g, OUTLINE, 9, 15, 1, 2);
+
+  // 팔 — 타이핑하듯 좌우 팔이 번갈아 1px씩 눌린다
+  const leftArmY = frame === 0 ? 11 : 12;
+  const rightArmY = frame === 0 ? 12 : 11;
+  px(g, STEEL, 2, leftArmY, 1, 6); // 왼팔
+  px(g, STEEL, 13, rightArmY, 1, 6); // 오른팔
 
   // 책상/의자에 가려질 하체 — 살짝만 표현
   px(g, STEEL_DARK, 4, 19, 8, 3);
@@ -435,8 +440,9 @@ export function generateTextures(scene: Phaser.Scene): void {
   tex(scene, "char_carry_up", 16, 24, (g) => drawChar(g, "up", 0, true));
   tex(scene, "char_carry_side", 16, 24, (g) => drawChar(g, "side", 0, true));
 
-  // ── 매수봇 로봇(뒷모습, native 16×24) + 상태 표시등(6×6) ──
-  tex(scene, "bot_robot", 16, 24, drawBotRobot);
+  // ── 매수봇 로봇(뒷모습, native 16×24, 타이핑 2프레임) + 상태 표시등(6×6) ──
+  tex(scene, "bot_robot_0", 16, 24, (g) => drawBotRobot(g, 0));
+  tex(scene, "bot_robot_1", 16, 24, (g) => drawBotRobot(g, 1));
   tex(scene, "status_dot", 6, 6, (g) => {
     g.fillStyle(0xffffff, 1);
     g.fillCircle(3, 3, 3);
