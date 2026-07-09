@@ -65,12 +65,16 @@ export interface BotLogEntry {
 
 /** 스캔 창(급등 탐지 시간대) 설정 */
 export interface ScanWindowConfig {
-  /** KST 기준 시작 시(0-23) */
+  /** KST 기준 시작 시(0-23). 구버전 반복 스캔 창 및 표시 호환용 */
   startHourKst: number;
-  /** KST 기준 시작 분(0-59) */
+  /** KST 기준 시작 분(0-59). 구버전 반복 스캔 창 및 표시 호환용 */
   startMinute: number;
   /** 창 지속 시간(분) */
   durationMinutes: number;
+  /** 1회성 스캔 창 시작 시각(epoch ms). 없으면 구버전 KST 반복 창으로 처리한다. */
+  startAt?: number;
+  /** 1회성 스캔 창 종료 시각(epoch ms). 없으면 구버전 KST 반복 창으로 처리한다. */
+  endAt?: number;
 }
 
 /**
@@ -107,11 +111,11 @@ export interface BotSettings {
   takeProfitRate: number;
   /** 손절 기준 손실률(예: 0.02 = -2%, 양수로 표기) */
   stopLossRate: number;
-  /** 동작 시간대(스캔 창) */
+  /** 투자 시간(스캔 창). 새 봇은 startAt/endAt 기준 1회성 창을 쓴다. */
   scanWindow: ScanWindowConfig;
 }
 
-/** 기본 스캔 창: KST 09:00 ~ 09:30 */
+/** 기본 투자 시간: 30분. startHourKst/startMinute는 구버전 반복 창 호환용 기본값이다. */
 export const DEFAULT_SCAN_WINDOW: ScanWindowConfig = {
   startHourKst: 9,
   startMinute: 0,

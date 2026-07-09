@@ -78,7 +78,7 @@ export function initBotDock(): void {
   title.textContent = "🤖 매수봇";
   const scanDot = document.createElement("div");
   scanDot.className = "bd-scan-dot";
-  scanDot.title = "09:00~09:30 KST 자동 스캔 중 켜짐";
+  scanDot.title = "매수봇 스캔 창이 열려 있으면 켜짐";
   const toggleBtn = document.createElement("button");
   toggleBtn.className = "bd-btn";
   const addBtn = document.createElement("button");

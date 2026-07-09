@@ -1,5 +1,5 @@
 /**
- * 매수봇 생성 창 — 봇마다 독립적인 예산(금액)/동작 시간대/익절·손절 퍼센트를 입력받는다.
+ * 매수봇 생성 창 — 봇마다 독립적인 예산(금액)/투자 시간/익절·손절 퍼센트를 입력받는다.
  * EV.OPEN_BOT_CREATE_MODAL 수신 시 열리고, 확정하면 botEngine.addBot(settings)을 직접 호출한다.
  */
 import noUiSlider from "nouislider";
@@ -17,31 +17,33 @@ const BOT_TYPE_OPTIONS: { type: BotType; text: string }[] = [
   { type: "longterm", text: `🌱 ${BOT_TYPE_LABEL.longterm} (최소 24시간 보유)` },
 ];
 
-// 동작 시간대 — "시작 시각"과 "지속 시간"을 각각 자기 폭 전체를 쓰는 슬라이더로 나눠 받는다.
-// (시작~시작+지속 두 값을 한 슬라이더의 두 손잡이로 합치면 30분처럼 짧은 구간은
-//  하루 두 바퀴(48h) 축 위에서 폭이 거의 안 보여 드래그하기 어려워진다 — 그래서 분리한다)
-// 시작이 몇 시든 지속시간을 최대 24시간까지 주면 자정을 넘어 익일로 넘어가는 구간도 그대로 표현된다
-// (예: 시작 00:00 + 지속 24시간 → "00:00 ~ 00:00").
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const DAY_MIN = 1440;
-const TIME_STEP = 10; // 기존 분(minute) select와 동일한 10분 단위
+const DURATION_STEP_MINUTES = 30;
 
 function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
 
-/** 시작 슬라이더 값(0~1430) → "HH:MM" */
-function fmtStart(raw: number | string): string {
-  const t = Math.round(Number(raw) / TIME_STEP) * TIME_STEP;
-  return `${pad2(Math.floor(t / 60))}:${pad2(t % 60)}`;
-}
-
 /** 지속시간 슬라이더 값(10~1440) → "N시간 M분" (24시간이면 "24시간") */
 function fmtDuration(raw: number | string): string {
-  const t = Math.round(Number(raw) / TIME_STEP) * TIME_STEP;
+  const t = Math.round(Number(raw) / DURATION_STEP_MINUTES) * DURATION_STEP_MINUTES;
   const h = Math.floor(t / 60);
   const m = t % 60;
   if (h === 0) return `${m}분`;
   return m === 0 ? `${h}시간` : `${h}시간 ${m}분`;
+}
+
+function kstTimeParts(at: number): { hour: number; minute: number } {
+  const d = new Date(at + KST_OFFSET_MS);
+  return { hour: d.getUTCHours(), minute: d.getUTCMinutes() };
+}
+
+function fmtKstDateTime(at: number): string {
+  const d = new Date(at + KST_OFFSET_MS);
+  const month = d.getUTCMonth() + 1;
+  const day = d.getUTCDate();
+  return `${month}/${day} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
 }
 
 export function initBotCreateModal(): void {
@@ -59,7 +61,7 @@ export function initBotCreateModal(): void {
 
   const desc = document.createElement("div");
   desc.className = "bcm-desc";
-  desc.textContent = "이 봇 전용 예산·동작 시간대·익절/손절 기준을 정해요.";
+  desc.textContent = "이 봇 전용 예산·투자 시간·익절/손절 기준을 정해요.";
 
   // 봇 종류
   const typeLabel = document.createElement("div");
@@ -98,48 +100,31 @@ export function initBotCreateModal(): void {
     budgetQuick.append(b);
   }
 
-  // 동작 시간대
+  // 투자 시간
   const timeLabel = document.createElement("div");
   timeLabel.className = "bcm-section-label";
-  timeLabel.textContent = "동작 시간대 (KST, 평일만)";
+  timeLabel.textContent = "투자 시간";
 
   const timeRow = document.createElement("div");
   timeRow.className = "bcm-time-row";
-
-  const startBlock = document.createElement("div");
-  startBlock.className = "bcm-slider-block";
-  const startBlockLabel = document.createElement("div");
-  startBlockLabel.className = "bcm-slider-label";
-  startBlockLabel.textContent = "시작 시각";
-  const startSliderEl = document.createElement("div");
-  startSliderEl.className = "bcm-time-slider";
-  startBlock.append(startBlockLabel, startSliderEl);
 
   const durationBlock = document.createElement("div");
   durationBlock.className = "bcm-slider-block";
   const durationBlockLabel = document.createElement("div");
   durationBlockLabel.className = "bcm-slider-label";
-  durationBlockLabel.textContent = "지속 시간";
+  durationBlockLabel.textContent = "지금부터";
   const durationSliderEl = document.createElement("div");
   durationSliderEl.className = "bcm-time-slider";
   durationBlock.append(durationBlockLabel, durationSliderEl);
 
-  timeRow.append(startBlock, durationBlock);
+  timeRow.append(durationBlock);
 
   const numFormat = { to: (v: number) => String(Math.round(v)), from: (v: string) => Number(v) };
-  const startSlider = noUiSlider.create(startSliderEl, {
-    start: [0],
-    behaviour: "drag",
-    range: { min: 0, max: DAY_MIN - TIME_STEP },
-    step: TIME_STEP,
-    tooltips: [{ to: fmtStart, from: Number }],
-    format: numFormat,
-  });
   const durationSlider = noUiSlider.create(durationSliderEl, {
     start: [DEFAULT_BOT_SETTINGS.scanWindow.durationMinutes],
     behaviour: "drag",
-    range: { min: TIME_STEP, max: DAY_MIN },
-    step: TIME_STEP,
+    range: { min: DURATION_STEP_MINUTES, max: DAY_MIN },
+    step: DURATION_STEP_MINUTES,
     tooltips: [{ to: fmtDuration, from: Number }],
     format: numFormat,
   });
@@ -204,17 +189,9 @@ export function initBotCreateModal(): void {
   let isOpen = false;
   let budget = DEFAULT_BOT_SETTINGS.budgetKrw;
   let botType: BotType = DEFAULT_BOT_SETTINGS.botType;
-  let scanStartHour = DEFAULT_BOT_SETTINGS.scanWindow.startHourKst;
-  let scanStartMinute = DEFAULT_BOT_SETTINGS.scanWindow.startMinute;
   let scanDurationMinutes = DEFAULT_BOT_SETTINGS.scanWindow.durationMinutes;
 
   // 슬라이더 값 변경 → 상태로 반영 — 프로그램적 set()에도 동일하게 호출된다
-  startSlider.on("update", (values) => {
-    const startTotal = Number(values[0]);
-    scanStartHour = Math.floor(startTotal / 60);
-    scanStartMinute = startTotal % 60;
-    renderTimePreview();
-  });
   durationSlider.on("update", (values) => {
     scanDurationMinutes = Number(values[0]);
     renderTimePreview();
@@ -230,15 +207,14 @@ export function initBotCreateModal(): void {
     for (const [t, btn] of typeButtons) btn.className = t === botType ? "pixel-btn" : "pixel-btn wood";
     timeHint.textContent =
       botType === "scalp"
-        ? "이 시간이 끝나면 보유 중인 포지션도 강제로 매도돼요."
+        ? "선택한 시간이 끝나면 보유 중인 포지션도 강제로 매도돼요."
         : "매수 스캔에만 적용돼요. 매도는 최소 24시간 보유 후 익절/손절 기준을 따라요.";
   }
 
   function renderTimePreview(): void {
-    const endTotal = scanStartHour * 60 + scanStartMinute + scanDurationMinutes;
-    const endH = Math.floor(endTotal / 60) % 24;
-    const endM = endTotal % 60;
-    timePreview.textContent = `${pad2(scanStartHour)}:${pad2(scanStartMinute)} ~ ${pad2(endH)}:${pad2(endM)} (평일)`;
+    const startAt = Date.now();
+    const endAt = startAt + scanDurationMinutes * 60_000;
+    timePreview.textContent = `지금부터 ${fmtDuration(scanDurationMinutes)} · ${fmtKstDateTime(startAt)} ~ ${fmtKstDateTime(endAt)} KST`;
   }
 
   function showError(msg: string): void {
@@ -255,7 +231,6 @@ export function initBotCreateModal(): void {
     setBotType(DEFAULT_BOT_SETTINGS.botType);
     setBudget(DEFAULT_BOT_SETTINGS.budgetKrw);
     // "update" 리스너가 상태/프리뷰까지 같이 갱신
-    startSlider.set(DEFAULT_BOT_SETTINGS.scanWindow.startHourKst * 60 + DEFAULT_BOT_SETTINGS.scanWindow.startMinute);
     durationSlider.set(DEFAULT_BOT_SETTINGS.scanWindow.durationMinutes);
     tpInput.value = String(DEFAULT_BOT_SETTINGS.takeProfitRate * 100);
     slInput.value = String(DEFAULT_BOT_SETTINGS.stopLossRate * 100);
@@ -292,15 +267,20 @@ export function initBotCreateModal(): void {
       showError("손절 %는 0보다 커야 해요.");
       return null;
     }
+    const startAt = Date.now();
+    const endAt = startAt + scanDurationMinutes * 60_000;
+    const { hour, minute } = kstTimeParts(startAt);
     return {
       botType,
       budgetKrw: budget,
       takeProfitRate: takeProfitPct / 100,
       stopLossRate: stopLossPct / 100,
       scanWindow: {
-        startHourKst: scanStartHour,
-        startMinute: scanStartMinute,
+        startHourKst: hour,
+        startMinute: minute,
         durationMinutes: scanDurationMinutes,
+        startAt,
+        endAt,
       },
     };
   }

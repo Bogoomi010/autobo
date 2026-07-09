@@ -25,6 +25,18 @@ function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
 
+function fmtDuration(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h === 0) return `${m}분`;
+  return m === 0 ? `${h}시간` : `${h}시간 ${m}분`;
+}
+
+function fmtKstTime(at: number): string {
+  const d = new Date(at + 9 * 60 * 60 * 1000);
+  return `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
+}
+
 export function botTypeIcon(botType: BotType): string {
   return botType === "scalp" ? "⚡" : "🌱";
 }
@@ -36,7 +48,11 @@ export function botTypeLabel(botType: BotType): string {
 /** "₩10,000 · 19:30(30분) · +3.0%/-2.0%" */
 export function formatBotSettingsLine(bot: TradeBot): string {
   const sw = bot.settings.scanWindow;
-  return `${krw(bot.settings.budgetKrw)} · ${pad2(sw.startHourKst)}:${pad2(sw.startMinute)}(${sw.durationMinutes}분) · +${(bot.settings.takeProfitRate * 100).toFixed(1)}%/-${(bot.settings.stopLossRate * 100).toFixed(1)}%`;
+  const time =
+    typeof sw.startAt === "number" && typeof sw.endAt === "number"
+      ? `${fmtKstTime(sw.startAt)}~${fmtKstTime(sw.endAt)}(${fmtDuration(sw.durationMinutes)})`
+      : `${pad2(sw.startHourKst)}:${pad2(sw.startMinute)}(${fmtDuration(sw.durationMinutes)})`;
+  return `${krw(bot.settings.budgetKrw)} · ${time} · +${(bot.settings.takeProfitRate * 100).toFixed(1)}%/-${(bot.settings.stopLossRate * 100).toFixed(1)}%`;
 }
 
 /** "누적 ₩0 · 0건" */

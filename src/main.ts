@@ -46,7 +46,7 @@ async function boot(): Promise<void> {
 
   await store.init(); // 세이브 로드 + 실계좌 연동 (실거래+키 없으면 입력 모달 / 모의면 가상 잔고)
   investment.start(); // 마켓 목록 로드 + 시세 폴링 + 자동 익절/손절
-  botEngine.start(); // 저장된 매수봇 명단 복원 (켜져 있었다면 09:00 스캔 루프 재개)
+  botEngine.start(); // 저장된 매수봇 명단 복원 (켜져 있었다면 스캔 루프 재개)
 
   const game = new Phaser.Game({
     type: Phaser.AUTO,

@@ -2,7 +2,7 @@
  * 로봇 매수봇 엔진. docs/robot-buyer-bot-reference.md 에 정리한 원본(React `useBotEngine`) 설계를
  * 게임 아키텍처로 이식 — React state 대신 싱글턴 + `bus` 이벤트로 UI(botDock.ts)에 통지한다.
  *
- * 1초 tick 루프: KST 09:00~09:30(평일, 또는 수동 스캔 5분) 스캔 창 동안 급등 코인을 탐지해
+ * 1초 tick 루프: 봇 생성 시점부터 사용자가 고른 시간 동안(또는 수동 스캔 5분) 급등 코인을 탐지해
  * 대기 중인 봇에게 배정 → 봇당 예산(기본 1만원) 시장가 매수 → 익절/손절 자동 매도.
  *
  * 단타봇/장투봇은 매도 알고리즘 자체는 같고(고정 익절/손절 + 붕괴 스코어 조기매도),
@@ -92,8 +92,11 @@ function kstDateKey(now: number): string {
   return new Date(now + KST_OFFSET_MS).toISOString().slice(0, 10);
 }
 
-/** 평일 KST 스캔 창(봇마다 설정 가능) 내부인지 */
+/** 스캔 창(봇마다 설정 가능) 내부인지. 새 봇은 1회성 startAt/endAt, 구버전 봇은 KST 반복 창을 쓴다. */
 function isWithinDailyScanWindow(scanWindow: ScanWindowConfig, now: number): boolean {
+  if (typeof scanWindow.startAt === "number" && typeof scanWindow.endAt === "number") {
+    return now >= scanWindow.startAt && now < scanWindow.endAt;
+  }
   const { weekday, minutesOfDay } = kstPartsOf(now);
   if (weekday === 0 || weekday === 6) return false; // 주말 제외
   const start = scanWindow.startHourKst * 60 + scanWindow.startMinute;
@@ -101,8 +104,9 @@ function isWithinDailyScanWindow(scanWindow: ScanWindowConfig, now: number): boo
   return minutesOfDay >= start && minutesOfDay < end;
 }
 
-/** 오늘(KST) 스캔 창이 끝나는 시각의 epoch ms — 단타봇의 세션 강제 마감 기준 */
+/** 스캔 창이 끝나는 시각의 epoch ms — 단타봇의 세션 강제 마감 기준 */
 function scanWindowEndMs(scanWindow: ScanWindowConfig, now: number): number {
+  if (typeof scanWindow.endAt === "number") return scanWindow.endAt;
   const kst = new Date(now + KST_OFFSET_MS);
   const kstMidnightUtcMs = Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()) - KST_OFFSET_MS;
   const endMinutesOfDay = scanWindow.startHourKst * 60 + scanWindow.startMinute + scanWindow.durationMinutes;
@@ -120,7 +124,9 @@ function isValidSettings(value: unknown): value is BotSettings {
     !!s.scanWindow &&
     typeof s.scanWindow.startHourKst === "number" &&
     typeof s.scanWindow.startMinute === "number" &&
-    typeof s.scanWindow.durationMinutes === "number"
+    typeof s.scanWindow.durationMinutes === "number" &&
+    (s.scanWindow.startAt === undefined || typeof s.scanWindow.startAt === "number") &&
+    (s.scanWindow.endAt === undefined || typeof s.scanWindow.endAt === "number")
   );
 }
 
@@ -320,7 +326,7 @@ class BotEngine {
     this.notify();
   }
 
-  /** 수동 스캔 창을 5분간 강제로 연다 (자동 09:00 창을 기다리지 않고 즉시 테스트/실행) */
+  /** 수동 스캔 창을 5분간 강제로 연다 (개별 봇 세션을 기다리지 않고 즉시 테스트/실행) */
   triggerScanNow(): void {
     const now = Date.now();
     this.manualScanUntil = now + MANUAL_SCAN_DURATION_MS;
