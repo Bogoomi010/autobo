@@ -220,6 +220,18 @@ class GameStore {
     return true;
   }
 
+  /**
+   * 매수봇 실현수익을 금고에 즉시 합산(모의 모드 전용) — 정산기 돈뭉치를 배출해 바닥에서
+   * 주워 입금하는 연출 없이 곧바로 반영한다. 로봇은 화면 어딘가(왼쪽 방)에 있어 정산기까지
+   * 돈뭉치가 날아가는 연출을 만들기 어렵고, 봇 수익은 "바로바로" 들어와야 자연스럽다.
+   */
+  creditVaultFromBot(amountKrw: number): void {
+    if (this.mode !== "sim" || amountKrw <= 0) return;
+    this.simBalance += amountKrw;
+    bus.emit(EV.WALLET, this.vaultBalance());
+    this.persist();
+  }
+
   /** 들고 있는 돈 전액을 금고에 입금(연출). 빈손이면 false */
   deposit(): boolean {
     if (this.carried <= 0) return false;

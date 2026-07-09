@@ -4,6 +4,7 @@ export class Sfx {
   private master: GainNode | null = null;
   private lastShoot = 0;
   private lastHover = 0;
+  private lastBotHover = 0;
   private lastFootLeft = true;
 
   /** 최초 사용자 입력 후 호출 (브라우저 오디오 정책) */
@@ -54,6 +55,26 @@ export class Sfx {
     if (now - this.lastHover < 60) return;
     this.lastHover = now;
     this.tone(1180, 0.035, "sine", 0.05, 1500);
+  }
+
+  /** 매수봇 로봇 마우스 호버 — "삐-빅" 2음 스캔음 (연속 호버 시 과다 재생 방지) */
+  botHover(): void {
+    const now = performance.now();
+    if (now - this.lastBotHover < 90) return;
+    this.lastBotHover = now;
+    this.tone(1600, 0.025, "square", 0.05, 1750);
+    this.tone(1250, 0.03, "square", 0.05, 1150, 0.03);
+  }
+
+  /** 매수봇 로봇에서 마우스가 빠져나갈 때 — 낮고 짧은 단음(호버음의 꼬리 느낌) */
+  botHoverOut(): void {
+    this.tone(950, 0.028, "square", 0.035, 650);
+  }
+
+  /** 매수봇 로봇 클릭(상세 패널 열기) — 호버음보다 낮고 또렷한 확인 블립 */
+  botClick(): void {
+    this.tone(1050, 0.04, "square", 0.07, 800);
+    this.tone(1500, 0.045, "square", 0.08, 1750, 0.045);
   }
 
   /** 걸음걸이 발소리 — 좌우 번갈아 살짝 다른 피치로 자연스러움을 준다 */

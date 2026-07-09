@@ -25,6 +25,7 @@ import { investment } from "../systems/InvestmentSystem";
 import { COLLAPSE_THRESHOLD, scoreCollapse, scoreSurgeCandidates } from "./surge";
 import {
   BOT_HOLD_LIMIT_MS,
+  BOT_MAX_BUDGET_KRW,
   BOT_TYPE_LABEL,
   DEFAULT_BOT_ENGINE_CONFIG,
   DEFAULT_BOT_SETTINGS,
@@ -123,6 +124,11 @@ function isValidSettings(value: unknown): value is BotSettings {
   );
 }
 
+/** 원금 상한(BOT_MAX_BUDGET_KRW) 적용 — 예전에 저장된 더 큰 예산의 봇도 불러올 때 같이 낮춘다 */
+function clampSettings(settings: BotSettings): BotSettings {
+  return { ...settings, budgetKrw: Math.min(settings.budgetKrw, BOT_MAX_BUDGET_KRW) };
+}
+
 function isValidLogs(value: unknown): value is BotLogEntry[] {
   return (
     Array.isArray(value) &&
@@ -144,7 +150,7 @@ function loadRoster(): RosterEntry[] {
       .map((e) => ({
         id: e.id,
         name: e.name,
-        settings: isValidSettings(e.settings) ? e.settings : DEFAULT_BOT_SETTINGS,
+        settings: clampSettings(isValidSettings(e.settings) ? e.settings : DEFAULT_BOT_SETTINGS),
         realizedPnlKrw: typeof e.realizedPnlKrw === "number" ? e.realizedPnlKrw : 0,
         tradesDone: typeof e.tradesDone === "number" ? e.tradesDone : 0,
         logs: isValidLogs(e.logs) ? e.logs : [],
@@ -295,7 +301,7 @@ class BotEngine {
   }
 
   addBot(settings: BotSettings): void {
-    this.bots = [...this.bots, makeBot(uid(), nextBotName(this.bots, settings.botType), settings)];
+    this.bots = [...this.bots, makeBot(uid(), nextBotName(this.bots, settings.botType), clampSettings(settings))];
     saveRoster(this.bots);
     this.notify();
   }
@@ -470,6 +476,8 @@ class BotEngine {
       this.inFlight.delete(botId);
       return;
     }
+    // 저장된 설정이 예전 큰 예산이더라도 실제 주문은 항상 원금 상한 이하로만 나간다
+    const budgetKrw = Math.min(bot.settings.budgetKrw, BOT_MAX_BUDGET_KRW);
 
     if (store.mode === "real" && !store.connected) {
       this.patchBot(botId, {
@@ -514,11 +522,11 @@ class BotEngine {
           const price = this.getCurrentPrice(market);
           if (price && price > 0) {
             entryPrice = price;
-            volume = (bot.settings.budgetKrw * (1 - this.config.feeRate)) / price;
+            volume = (budgetKrw * (1 - this.config.feeRate)) / price;
           }
         } else {
           await placeOrder(
-            { market, side: "bid", ord_type: "price", price: String(bot.settings.budgetKrw), identifier: orderIdentifier },
+            { market, side: "bid", ord_type: "price", price: String(budgetKrw), identifier: orderIdentifier },
             false
           );
           const currency = market.replace("KRW-", "");
@@ -558,16 +566,17 @@ class BotEngine {
           targetNameKo: nameKo,
           entryPrice,
           volume,
-          investedKrw: bot.settings.budgetKrw,
+          investedKrw: budgetKrw,
           peakPriceSinceEntry: entryPrice,
           tradeId,
           lastMarketLogAt: Date.now(),
           currentPnlRate: 0,
           lastMessage: `${nameKo ?? market} 매수!`,
           lastActionAt: Date.now(),
-          logs: this.appendLogFor(botId, `✅ ${nameKo ?? market} 매수 완료 @ ${krw(entryPrice)} (${krw(bot.settings.budgetKrw)})`),
+          logs: this.appendLogFor(botId, `✅ ${nameKo ?? market} 매수 완료 @ ${krw(entryPrice)} (${krw(budgetKrw)})`),
         });
         bus.emit(EV.TOAST, `🤖 ${bot.name} → ${nameKo ?? market} ${store.mode === "sim" ? "[모의] " : ""}매수`, "good");
+        if (store.mode === "real") void store.refreshAccounts(); // 자금이 묶인 만큼 금고 표시를 바로 갱신
         this.logTrade({
           timestamp: new Date().toISOString(),
           trade_id: tradeId,
@@ -579,7 +588,7 @@ class BotEngine {
           mode: store.mode,
           price: entryPrice,
           volume,
-          invested_krw: bot.settings.budgetKrw,
+          invested_krw: budgetKrw,
           pnl_krw: null,
           pnl_rate: null,
           reason: "buy",
@@ -669,6 +678,15 @@ class BotEngine {
           `🤖 ${bot.name} ${bot.targetNameKo ?? market} ${reasonEmoji} ${reasonLabel}${detail ? ` (${detail})` : ""} (${(pnlRate * 100).toFixed(1)}%)`,
           pnlRate >= 0 ? "good" : "bad"
         );
+
+        // 원금은 다음 매수 때 다시 그만큼만 쓰고, 수익은 정산기 연출 없이 곧바로 금고에 꽂힌다
+        if (store.mode === "sim" && realized > 0) {
+          store.creditVaultFromBot(realized);
+          bus.emit(EV.BOT_PROFIT_CREDITED, botId, realized);
+        } else if (store.mode === "real") {
+          void store.refreshAccounts(); // 실거래는 이미 실계좌에 들어간 돈 — 표시만 바로 갱신
+        }
+
         this.logTrade({
           timestamp: new Date().toISOString(),
           trade_id: bot.tradeId ?? "",

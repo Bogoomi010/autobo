@@ -17,7 +17,9 @@ import {
   isBotBusyState,
 } from "../bots/botFormat";
 import type { BotState, TradeBot } from "../bots/types";
+import { sfx } from "../core/sfx";
 import { bus, EV } from "../game/events";
+import { krw } from "../game/format";
 import { badgeColorHex } from "../ui/uiKit";
 
 const CHAR_SCALE = 2; // OfficeScene.ts 캐릭터 배율과 동일 — 로봇이 사용자 캐릭터와 같은 비율로 보이게 한다
@@ -113,6 +115,7 @@ export class BotFloor {
   private tooltipFoot: Phaser.GameObjects.Text;
 
   private readonly onBotsChanged = (bots: TradeBot[]): void => this.render(bots);
+  private readonly onBotProfitCredited = (botId: string, amountKrw: number): void => this.showProfitPopup(botId, amountKrw);
 
   constructor(private scene: Phaser.Scene) {
     this.tooltipBg = scene.add.graphics();
@@ -174,13 +177,48 @@ export class BotFloor {
 
     this.render(botEngine.getBots());
     bus.on(EV.BOTS_CHANGED, this.onBotsChanged);
+    bus.on(EV.BOT_PROFIT_CREDITED, this.onBotProfitCredited);
   }
 
   destroy(): void {
     bus.off(EV.BOTS_CHANGED, this.onBotsChanged);
+    bus.off(EV.BOT_PROFIT_CREDITED, this.onBotProfitCredited);
     for (const rec of this.recs.values()) this.destroyRec(rec);
     this.recs.clear();
     this.tooltipContainer.destroy();
+  }
+
+  /**
+   * 봇이 수익 매도해 금고에 바로 입금됐을 때(EV.BOT_PROFIT_CREDITED) — 정산기까지 돈뭉치가
+   * 굴러가는 연출 대신, 그 봇 책상 위에 "+₩N" 획득 텍스트를 띄우고 바로 위로 사라지게 한다.
+   */
+  private showProfitPopup(botId: string, amountKrw: number): void {
+    const rec = this.recs.get(botId);
+    if (!rec) return;
+
+    sfx.card();
+    this.burstSparkle(rec);
+
+    const label = this.scene.add
+      .text(rec.robotX, rec.robotY - 30, `+${krw(amountKrw)}`, {
+        fontFamily: KO_FONT,
+        fontSize: "13px",
+        fontStyle: "bold",
+        color: "#2fbf9b",
+        stroke: DARK,
+        strokeThickness: 3,
+      })
+      .setOrigin(0.5, 1)
+      .setDepth(20001);
+
+    this.scene.tweens.add({
+      targets: label,
+      y: rec.robotY - 62,
+      alpha: 0,
+      duration: 900,
+      ease: "Cubic.easeOut",
+      onComplete: () => label.destroy(),
+    });
   }
 
   private render(bots: TradeBot[]): void {
@@ -217,9 +255,16 @@ export class BotFloor {
     robot.play("bot-working");
     const light = this.scene.add.image(robotX + 2, robotY - 36, "status_dot").setDepth(20000);
 
-    robot.on("pointerover", () => this.showTooltip(bot.id));
-    robot.on("pointerout", () => this.hideTooltip());
+    robot.on("pointerover", () => {
+      sfx.botHover();
+      this.showTooltip(bot.id);
+    });
+    robot.on("pointerout", () => {
+      sfx.botHoverOut();
+      this.hideTooltip();
+    });
     robot.on("pointerdown", () => {
+      sfx.botClick();
       this.hideTooltip();
       bus.emit(EV.OPEN_BOT_DETAIL, bot.id);
     });

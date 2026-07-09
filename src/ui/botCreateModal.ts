@@ -5,12 +5,12 @@
 import noUiSlider from "nouislider";
 import "nouislider/dist/nouislider.css";
 import { botEngine } from "../bots/botEngine";
-import { BOT_TYPE_LABEL, DEFAULT_BOT_SETTINGS, type BotSettings, type BotType } from "../bots/types";
+import { BOT_MAX_BUDGET_KRW, BOT_TYPE_LABEL, DEFAULT_BOT_SETTINGS, type BotSettings, type BotType } from "../bots/types";
 import { bus, EV } from "../game/events";
 import { krw } from "../game/format";
 
-const QUICK_BUDGETS = [5_000, 10_000, 50_000, 100_000];
-const MIN_BUDGET_KRW = 5_000; // 업비트 최소 주문금액
+const QUICK_BUDGETS = [500, 1_000, 1_500, BOT_MAX_BUDGET_KRW];
+const MIN_BUDGET_KRW = 500; // 원금 상한(BOT_MAX_BUDGET_KRW=2,000원) 안에서 고르게 하는 하한
 
 const BOT_TYPE_OPTIONS: { type: BotType; text: string }[] = [
   { type: "scalp", text: `⚡ ${BOT_TYPE_LABEL.scalp} (최대 24시간 보유)` },
@@ -221,7 +221,7 @@ export function initBotCreateModal(): void {
   });
 
   function setBudget(v: number): void {
-    budget = Math.max(0, Math.floor(v));
+    budget = Math.max(0, Math.min(BOT_MAX_BUDGET_KRW, Math.floor(v)));
     budgetInput.value = budget > 0 ? budget.toLocaleString("ko-KR") : "";
   }
 

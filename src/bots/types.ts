@@ -88,6 +88,15 @@ export const BOT_TYPE_LABEL: Record<BotType, string> = {
 /** 장투봇 최소 보유시간(24시간) — 단타봇은 대신 BotSettings.scanWindow(세션)로 매도 시점을 제한한다 */
 export const BOT_HOLD_LIMIT_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * 봇 1회 매수에 쓸 수 있는 원금 상한(KRW). 원금 자체는 이 값을 넘지 않고,
+ * 원금으로 번 실현수익은 한도 없이 계속 그 봇의 실적(realizedPnlKrw)에 쌓인다 —
+ * 즉 "원금은 2,000원으로 고정, 수익은 매도 즉시 금고로" 흐름을 만드는 안전판이다.
+ * (참고: 업비트 실거래 최소 주문금액 5,000원보다 작아 실거래 모드에서는 주문이 거부될 수 있다 —
+ * 지금은 모의 모드 데이터 축적 단계라 의도적으로 낮게 잡았다.)
+ */
+export const BOT_MAX_BUDGET_KRW = 2_000;
+
 /** 봇 1대별 사용자 설정 — 생성 창에서 입력받아 봇마다 독립적으로 가진다 */
 export interface BotSettings {
   /** 단타봇/장투봇 — 보유 시간 제약을 결정하며 생성 후 변경하지 않는다 */
@@ -112,7 +121,7 @@ export const DEFAULT_SCAN_WINDOW: ScanWindowConfig = {
 /** 봇 생성 창의 기본값 */
 export const DEFAULT_BOT_SETTINGS: BotSettings = {
   botType: "scalp",
-  budgetKrw: 10_000,
+  budgetKrw: BOT_MAX_BUDGET_KRW,
   takeProfitRate: 0.03,
   stopLossRate: 0.02,
   scanWindow: DEFAULT_SCAN_WINDOW,

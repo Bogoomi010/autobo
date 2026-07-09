@@ -57,6 +57,11 @@ export const EV = {
   OPEN_BOT_DETAIL: "open-bot-detail",
   /** (없음) UI → 월드: 매수봇 상세 패널 닫힘 */
   BOT_DETAIL_CLOSED: "bot-detail-closed",
+  /**
+   * (botId: string, amountKrw: number) 매수봇이 수익 매도해 금고에 바로 입금됐을 때(모의 모드).
+   * botFloor.ts가 그 봇의 책상 위에 "+₩N" 획득 이펙트를 띄우는 트리거로 쓴다.
+   */
+  BOT_PROFIT_CREDITED: "bot-profit-credited",
 } as const;
 
 // 타입 참조 유지용 (페이로드 계약 문서화)

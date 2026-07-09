@@ -38,6 +38,24 @@ idle → scanning → targeting → buying → holding → selling → sold_prof
 왼쪽 방 매수봇 로봇을 클릭했을 때 뜨는 상세 패널(`botDetailModal.ts`)에서 "어떻게 투자했는지"를
 바로 훑어보는 용도다.
 
+### 1.1 원금 상한과 수익 처리
+
+1회 매수 예산(`BotSettings.budgetKrw`)은 `BOT_MAX_BUDGET_KRW`(2,000원)를 넘을 수 없다 —
+생성 창(`botCreateModal.ts`)에서 막고, 명단을 불러올 때(`clampSettings`)와 실제 주문을 넣는
+순간(`executeBuy`) 양쪽에서 다시 클램프해 예전에 저장된 더 큰 예산도 안전하게 낮춘다.
+(참고: 업비트 실거래 최소 주문금액은 5,000원이라 이 원금으로는 실거래 모드에서 주문이 거부될 수
+있다 — 지금은 모의 모드로 데이터를 쌓는 단계라 의도적으로 낮게 잡았다.)
+
+원금은 매 라운드 그대로 재사용하고(=봇 실적에 따라 커지지 않음), 수익은 매도 성공 즉시
+플레이어의 금고로 들어간다:
+- **모의 모드**: `realized > 0`이면 `store.creditVaultFromBot(realized)`로 정산기 돈뭉치
+  연출 없이 곧바로 `simBalance`에 합산하고, `EV.BOT_PROFIT_CREDITED`를 emit해 `botFloor.ts`가
+  그 봇 책상 위에 "+₩N" 획득 텍스트를 띄운다. 손실(`realized <= 0`)은 금고에서 따로 차감하지
+  않는다 — 봇은 매수 시점에 금고에서 실제로 돈을 꺼내가지 않으므로 잃을 금고 돈이 없다.
+- **실거래 모드**: 매도 주문 자체가 실계좌에서 체결되므로 돈은 이미 계좌에 들어가 있다.
+  `executeBuy`/`executeSell` 양쪽에서 `store.refreshAccounts()`를 호출해 금고 표시(계좌 조회값)만
+  바로 갱신한다.
+
 ---
 
 ## 2. 봇 종류 — 단타봇 / 장투봇
