@@ -8,8 +8,8 @@
  * 단타봇/장투봇은 매도 알고리즘 자체는 같고(고정 익절/손절 + 붕괴 스코어 조기매도),
  * "매도를 허용하는 시점"만 다르다.
  * - 단타봇: 세션(스캔 창) 시간 안에서만 매도 판정을 하며, 세션이 끝나면 보유 중이어도 강제 매도한다.
- * - 장투봇: 손절은 보유시간과 무관하게 즉시 적용하고, 익절/반전 판정은 24시간 뒤 열며 최대 보유기간에는 강제 청산한다.
- * 각자의 조건을 통과한 뒤부터는 동일하게 고정 익절을 확인하고, 그 사이 구간에서는
+ * - 장투봇: 손절·익절은 목표 도달 즉시 적용하고, 붕괴 신호 판정은 24시간 뒤 열며 최대 보유기간에는 강제 청산한다.
+ * 장투봇은 매도 후 원금과 순실현손익을 다음 매수 예산으로 누적 재투자하고, 그 사이 구간에서는
  * 붕괴 스코어(진입 스코어의 반전판 — 고점 대비 되돌림/체결대금 감속/매도 우위 전환)가 임계값을
  * 넘으면 조기 매도한다.
  * 봇은 플레이어가 들고 다니는 돈(carried)과 무관하게 독립적으로 동작한다.
@@ -25,6 +25,7 @@ import { store } from "../game/state";
 import { investment } from "../systems/InvestmentSystem";
 import { COLLAPSE_THRESHOLD, scoreCollapse, scoreSurgeCandidates } from "./surge";
 import { decideLongtermExit } from "./exitPolicy";
+import { nextBotBudgetKrw } from "./capital";
 import {
   BOT_MAX_LONGTERM_DURATION_MINUTES,
   BOT_MAX_BUDGET_KRW,
@@ -730,6 +731,8 @@ class BotEngine {
         const cost = entryPrice * volume * (1 + this.config.feeRate);
         const realized = proceeds - cost;
         this.recordRealizedPnl(realized, Date.now());
+        const nextBudgetKrw = nextBotBudgetKrw(bot.settings.budgetKrw, realized);
+        const reinvestLog = `♻️ 다음 매수 원금 ${krw(nextBudgetKrw)} (이번 순손익 ${realized >= 0 ? "+" : ""}${krw(realized)})`;
 
         // 상태는 실제 손익 부호로 정하고, reason은 매도 사유(익절/손절/세션종료/반전신호)로 따로 남긴다
         const soldState = pnlRate >= 0 ? "sold_profit" : "sold_loss";
@@ -738,6 +741,7 @@ class BotEngine {
         const reasonEmoji = reason === "timeout" ? "⏰" : reason === "signal" ? "📉" : reason === "profit" ? "✨" : "💥";
         this.patchBot(botId, {
           state: soldState,
+          settings: { ...bot.settings, budgetKrw: nextBudgetKrw },
           currentPnlRate: pnlRate,
           realizedPnlKrw: bot.realizedPnlKrw + realized,
           tradesDone: bot.tradesDone + 1,
@@ -745,7 +749,7 @@ class BotEngine {
           lastActionAt: Date.now(),
           logs: this.appendLogFor(
             botId,
-            `${pnlRate >= 0 ? "💰" : "📉"} ${bot.targetNameKo ?? market} ${reasonLabel} @ ${krw(currentPrice)} — ${pnlRate >= 0 ? "+" : ""}${(pnlRate * 100).toFixed(2)}% (${krw(realized)})`
+            `${pnlRate >= 0 ? "💰" : "📉"} ${bot.targetNameKo ?? market} ${reasonLabel} @ ${krw(currentPrice)} — ${pnlRate >= 0 ? "+" : ""}${(pnlRate * 100).toFixed(2)}% (${krw(realized)}); ${reinvestLog}`
           ),
         });
         bus.emit(
@@ -754,7 +758,7 @@ class BotEngine {
           pnlRate >= 0 ? "good" : "bad"
         );
 
-        // 원금은 다음 매수 때 다시 그만큼만 쓰고, 수익은 정산기 연출 없이 곧바로 금고에 꽂힌다
+        // 매도 후 순손익을 다음 매수 원금에 합산한다. 수익은 모의 금고에도 즉시 반영한다.
         if (store.mode === "sim" && realized > 0) {
           store.creditVaultFromBot(realized);
           bus.emit(EV.BOT_PROFIT_CREDITED, botId, realized);

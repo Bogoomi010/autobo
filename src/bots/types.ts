@@ -82,7 +82,7 @@ export interface ScanWindowConfig {
 /**
  * 봇 종류 — 매도 판정을 "언제부터 허용하는지"가 다르다(매도 알고리즘 자체는 공통).
  * - scalp(단타봇): 세션(스캔 창) 안에서만 매도 판정, 세션이 끝나면 보유 중이어도 강제 매도
- * - longterm(장투봇): 손절은 즉시, 익절/반전 판정은 24시간 이후, 최대 보유기간에는 강제 청산
+ * - longterm(장투봇): 손절·익절은 즉시, 붕괴 신호 판정은 24시간 이후, 최대 보유기간에는 강제 청산
  */
 export type BotType = "scalp" | "longterm";
 
@@ -91,7 +91,7 @@ export const BOT_TYPE_LABEL: Record<BotType, string> = {
   longterm: "장투봇",
 };
 
-/** 장투봇 익절/반전 판정 대기시간(24시간). 사용자가 설정한 손절선은 이 시간 전에도 즉시 적용한다. */
+/** 장투봇 붕괴 신호 판정 대기시간(24시간). 손절·익절 목표는 이 시간 전에도 즉시 적용한다. */
 export const BOT_HOLD_LIMIT_MS = 24 * 60 * 60 * 1000;
 
 /** 장투봇은 최소 1일, 최대 30일까지 한 거래의 보유기간을 설정한다. */
@@ -100,9 +100,8 @@ export const BOT_MAX_LONGTERM_DURATION_MINUTES = 30 * 24 * 60;
 
 /**
  * 업비트 KRW 마켓 최소 주문금액(5,000원)에 손실·수수료 완충을 더한 앱 최소 예산과 1회 주문 안전 상한.
- * 원금 자체는 상한을 넘지 않고,
- * 원금으로 번 실현수익은 한도 없이 계속 그 봇의 실적(realizedPnlKrw)에 쌓인다 —
- * 수익은 매도 즉시 금고로 보내는 흐름을 만든다.
+ * 매도 후 순실현손익은 다음 매수 원금에 합산하되, 원금은 최소·최대 안전범위를 지킨다.
+ * 수익은 매도 즉시 실적과 모의 금고에 반영한다.
  */
 export const BOT_MIN_BUDGET_KRW = 6_000;
 export const BOT_MAX_BUDGET_KRW = 100_000;

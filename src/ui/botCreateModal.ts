@@ -230,7 +230,7 @@ export function initBotCreateModal(): void {
         false
       );
       durationSlider.set(Math.max(BOT_MIN_LONGTERM_DURATION_MINUTES, scanDurationMinutes));
-      timeHint.textContent = "입력한 손절률은 즉시 강제 매도하고, 익절·반전은 24시간 후부터 판단해요. 기간 만료 시 자동 매도해요.";
+      timeHint.textContent = "손절·익절률은 즉시 적용하고, 붕괴 신호는 24시간 후부터 판단해요. 매도 수익은 다음 투자 원금에 합산해요.";
     }
   }
 
