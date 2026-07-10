@@ -99,12 +99,12 @@ export const BOT_MIN_LONGTERM_DURATION_MINUTES = 24 * 60;
 export const BOT_MAX_LONGTERM_DURATION_MINUTES = 30 * 24 * 60;
 
 /**
- * 업비트 KRW 마켓 실거래 최소 주문금액과 앱의 1회 주문 안전 상한.
+ * 업비트 KRW 마켓 최소 주문금액(5,000원)에 손실·수수료 완충을 더한 앱 최소 예산과 1회 주문 안전 상한.
  * 원금 자체는 상한을 넘지 않고,
  * 원금으로 번 실현수익은 한도 없이 계속 그 봇의 실적(realizedPnlKrw)에 쌓인다 —
  * 수익은 매도 즉시 금고로 보내는 흐름을 만든다.
  */
-export const BOT_MIN_BUDGET_KRW = 5_000;
+export const BOT_MIN_BUDGET_KRW = 6_000;
 export const BOT_MAX_BUDGET_KRW = 100_000;
 
 /** 봇 1대별 사용자 설정 — 생성 창에서 입력받아 봇마다 독립적으로 가진다 */

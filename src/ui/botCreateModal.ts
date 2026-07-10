@@ -18,7 +18,7 @@ import {
 import { bus, EV } from "../game/events";
 import { krw } from "../game/format";
 
-const QUICK_BUDGETS = [BOT_MIN_BUDGET_KRW, 6_000, 10_000, 20_000];
+const QUICK_BUDGETS = [BOT_MIN_BUDGET_KRW, 10_000, 20_000, 50_000];
 
 const BOT_TYPE_OPTIONS: { type: BotType; text: string }[] = [
   { type: "scalp", text: `⚡ ${BOT_TYPE_LABEL.scalp} (최대 24시간 보유)` },
@@ -280,7 +280,7 @@ export function initBotCreateModal(): void {
 
   function readSettings(): BotSettings | null {
     if (budget < BOT_MIN_BUDGET_KRW) {
-      showError(`예산은 업비트 최소 주문금액인 ${krw(BOT_MIN_BUDGET_KRW)} 이상이어야 해요.`);
+      showError(`안전 운용을 위해 예산은 ${krw(BOT_MIN_BUDGET_KRW)} 이상이어야 해요.`);
       return null;
     }
     if (

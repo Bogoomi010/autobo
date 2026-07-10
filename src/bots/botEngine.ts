@@ -3,7 +3,7 @@
  * 게임 아키텍처로 이식 — React state 대신 싱글턴 + `bus` 이벤트로 UI(botDock.ts)에 통지한다.
  *
  * 1초 tick 루프: 봇 생성 시점부터 사용자가 고른 시간 동안(또는 수동 스캔 5분) 급등 코인을 탐지해
- * 대기 중인 봇에게 배정 → 봇당 예산(기본 5천원) 시장가 매수 → 익절/손절 자동 매도.
+ * 대기 중인 봇에게 배정 → 봇당 예산(기본 6천원) 시장가 매수 → 익절/손절 자동 매도.
  *
  * 단타봇/장투봇은 매도 알고리즘 자체는 같고(고정 익절/손절 + 붕괴 스코어 조기매도),
  * "매도를 허용하는 시점"만 다르다.
@@ -177,7 +177,7 @@ function loadRoster(): RosterEntry[] {
         return {
           id: e.id,
           name: e.name,
-          // 기존 5천원 미만 봇은 주문액을 자동 증액한 채 바로 실행하지 않도록 안전하게 일시정지한다.
+          // 기존 6천원 미만 봇은 주문액을 자동 증액한 채 바로 실행하지 않도록 안전하게 일시정지한다.
           enabled: legacyUnderMinimum ? false : typeof e.enabled === "boolean" ? e.enabled : true,
           settings: clampSettings(rawSettings),
           realizedPnlKrw: typeof e.realizedPnlKrw === "number" ? e.realizedPnlKrw : 0,
