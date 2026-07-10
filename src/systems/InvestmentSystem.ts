@@ -3,6 +3,7 @@ import { STOP_LOSS_RATE, TAKE_PROFIT_RATE, TICKER_POLL_MS } from "../game/config
 import { bus, EV } from "../game/events";
 import { store } from "../game/state";
 import type { CoinInfo, Ticker } from "../game/types";
+import { backgroundTrading } from "../core/backgroundTrading";
 
 /** 백오프 상한 (ms) */
 const BACKOFF_MAX_MS = 60_000;
@@ -21,10 +22,18 @@ class InvestmentSystem {
   private backoffStep = 0;
   private started = false;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  private pollRunning = false;
+  private lastPollStartedAt = 0;
 
   start(): void {
     if (this.started) return;
     this.started = true;
+    backgroundTrading.subscribe((now) => {
+      if (this.markets.length === 0 || this.pollRunning || now - this.lastPollStartedAt < TICKER_POLL_MS) return;
+      if (this.pollTimer) clearTimeout(this.pollTimer);
+      this.pollTimer = null;
+      void this.poll();
+    });
     void this.bootstrap();
   }
 
@@ -58,6 +67,9 @@ class InvestmentSystem {
   }
 
   private async poll(): Promise<void> {
+    if (this.pollRunning) return;
+    this.pollRunning = true;
+    this.lastPollStartedAt = Date.now();
     try {
       const tickers = await fetchAllKrwTickers();
       const map = new Map<string, Ticker>();
@@ -74,6 +86,8 @@ class InvestmentSystem {
     } catch {
       this.setApiStatus(false);
       this.scheduleNext(this.nextBackoff());
+    } finally {
+      this.pollRunning = false;
     }
   }
 

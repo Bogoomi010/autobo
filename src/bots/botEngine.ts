@@ -18,6 +18,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { fetchAccounts, placeOrder } from "../api/upbit";
 import { isTauri } from "../core/platform";
+import { backgroundTrading } from "../core/backgroundTrading";
 import { bus, EV } from "../game/events";
 import { krw } from "../game/format";
 import { store } from "../game/state";
@@ -43,7 +44,6 @@ import {
   type TradeVolumeSnapshot,
 } from "./types";
 
-const TICK_MS = 1000;
 // 월드 매수봇 상세 패널에 보여줄 인메모리 활동 로그 — CSV(§6)와 별개로 최근 N건만 유지한다
 const BOT_LOG_MAX = 30;
 const HISTORY_WINDOW_MS = 60_000; // 롤링 체결 이력 60초
@@ -283,8 +283,8 @@ class BotEngine {
   private manualScanUntil: number | null = null;
   private lastSurgeScan = 0;
   private inFlight = new Set<string>();
-  private tickTimer: ReturnType<typeof setInterval> | null = null;
   private tickRunning = false;
+  private unsubscribeBackgroundTick: (() => void) | null = null;
 
   // 리스크 가드 — 앱 재시작 시 초기화된다(런타임 포지션과 동일하게 영속화하지 않음)
   private dailyKey: string = kstDateKey(Date.now());
@@ -306,6 +306,7 @@ class BotEngine {
     if (this.bots.length > 0) {
       bus.emit(EV.TOAST, "저장된 매수봇 명단을 불러왔어요. 보유 포지션은 초기화됩니다.", "info");
     }
+    this.unsubscribeBackgroundTick ??= backgroundTrading.subscribe(() => this.runTickSafely());
     this.notify();
     if (this.enabled) this.runLoop(true);
   }
@@ -405,21 +406,22 @@ class BotEngine {
 
   private runLoop(on: boolean): void {
     if (on) {
-      if (this.tickTimer) return;
       void this.ensureTradeStream();
-      this.tickTimer = setInterval(() => {
-        if (this.tickRunning) return;
-        this.tickRunning = true;
-        try {
-          this.runTick();
-        } finally {
-          this.tickRunning = false;
-        }
-      }, TICK_MS);
-    } else if (this.tickTimer) {
-      clearInterval(this.tickTimer);
-      this.tickTimer = null;
+      backgroundTrading.setActive(true);
+      this.runTickSafely();
+    } else {
+      backgroundTrading.setActive(false);
       this.teardownTradeStream();
+    }
+  }
+
+  private runTickSafely(): void {
+    if (!this.enabled || this.tickRunning) return;
+    this.tickRunning = true;
+    try {
+      this.runTick();
+    } finally {
+      this.tickRunning = false;
     }
   }
 

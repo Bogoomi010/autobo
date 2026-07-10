@@ -11,7 +11,12 @@
 
 로봇 매수봇은 Upbit KRW 마켓에서 실시간으로 급등하는 코인을 탐지해 시장가로 매수하고,
 익절/손절 또는 추세 반전 신호가 오면 매도하는 자동매매 엔진이다. `BotEngine` 싱글턴이
-1초 tick 루프(`runTick`)로 동작하며, 각 로봇 봇은 아래 상태 머신을 따른다.
+1초 tick 루프(`runTick`)로 동작하며, 각 로봇 봇은 아래 상태 머신을 따른다. Tauri 앱에서는
+이 tick을 WebView의 `setInterval`로 만들지 않고 Rust 백엔드의 `bot-background-tick` 이벤트로
+구동한다. 따라서 창 포커스가 없거나 화면이 잠겨 WebView 타이머가 지연돼도 판단 주기를 유지한다.
+같은 심박이 3초 시세 폴링도 보충 실행하며, 전체 봇이 켜진 동안 macOS `caffeinate -i` 프로세스로
+유휴 시스템 절전을 막는다. 사용자가 명시적으로 시스템을 잠재우거나 노트북 덮개를 닫은 상태까지
+깨우는 기능은 아니다.
 
 ```
 idle → scanning → targeting → buying → holding → selling → sold_profit/sold_loss → idle

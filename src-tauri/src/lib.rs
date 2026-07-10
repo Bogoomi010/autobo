@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
+use std::process::Child;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::async_runtime::JoinHandle;
@@ -21,10 +22,77 @@ const UPBIT_BASE_URL: &str = "https://api.upbit.com";
 const UPBIT_WEBSOCKET_URL: &str = "wss://api.upbit.com/websocket/v1";
 type SessionApiKeys = Mutex<Option<ApiKeys>>;
 type TradeStreamState = Mutex<Option<JoinHandle<()>>>;
+struct BackgroundTradingTaskState(Mutex<Option<JoinHandle<()>>>);
+struct KeepAwakeState(Mutex<Option<Child>>);
 
 struct OrderbookStreamState(Mutex<Option<JoinHandle<()>>>);
 /// 트레이딩 보드 전용 단일 마켓 실시간 체결(틱) 스트림 — 집계 없이 체결 건마다 그대로 프론트에 전달한다
 struct BoardTradeStreamState(Mutex<Option<JoinHandle<()>>>);
+
+#[cfg(target_os = "macos")]
+fn start_keep_awake() -> Option<Child> {
+    std::process::Command::new("/usr/bin/caffeinate")
+        .args(["-i", "-w", &std::process::id().to_string()])
+        .spawn()
+        .ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn start_keep_awake() -> Option<Child> {
+    None
+}
+
+fn stop_keep_awake(child: &mut Option<Child>) {
+    if let Some(mut process) = child.take() {
+        let _ = process.kill();
+        let _ = process.wait();
+    }
+}
+
+/// WebView 타이머와 무관한 매수봇 심박을 만들고, macOS에서는 화면 잠금 중 유휴 시스템 절전을 막는다.
+#[tauri::command]
+fn set_background_trading_active(
+    app: AppHandle,
+    active: bool,
+    task_state: tauri::State<'_, BackgroundTradingTaskState>,
+    keep_awake_state: tauri::State<'_, KeepAwakeState>,
+) -> Result<(), String> {
+    let mut task = task_state
+        .0
+        .lock()
+        .map_err(|_| "백그라운드 매매 상태를 사용할 수 없습니다.".to_string())?;
+    let mut keep_awake = keep_awake_state
+        .0
+        .lock()
+        .map_err(|_| "절전 방지 상태를 사용할 수 없습니다.".to_string())?;
+
+    if active {
+        if keep_awake.is_none() {
+            *keep_awake = start_keep_awake();
+        }
+        if task.is_none() {
+            *task = Some(tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(1));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let _ = app.emit("bot-background-tick", now);
+                }
+            }));
+        }
+    } else {
+        if let Some(handle) = task.take() {
+            handle.abort();
+        }
+        stop_keep_awake(&mut keep_awake);
+    }
+
+    Ok(())
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct JwtClaims {
@@ -1565,7 +1633,9 @@ async fn place_order(
 pub fn run() {
     tauri::Builder::default()
         .manage(Mutex::new(None::<ApiKeys>))
+        .manage(BackgroundTradingTaskState(Mutex::new(None::<JoinHandle<()>>)))
         .manage(Mutex::new(None::<JoinHandle<()>>))
+        .manage(KeepAwakeState(Mutex::new(None::<Child>)))
         .manage(OrderbookStreamState(Mutex::new(None::<JoinHandle<()>>)))
         .manage(BoardTradeStreamState(Mutex::new(None::<JoinHandle<()>>)))
         .plugin(tauri_plugin_opener::init())
@@ -1581,6 +1651,7 @@ pub fn run() {
             stop_orderbook_stream,
             start_board_trade_stream,
             stop_board_trade_stream,
+            set_background_trading_active,
             has_saved_keys,
             list_api_key_profiles,
             log_bot_trade,
@@ -1653,5 +1724,24 @@ mod tests {
 
         let contents = encrypt_keys(&keys, &[7u8; 32]).expect("encrypt should succeed");
         decrypt_keys(&contents, &[8u8; 32]).expect_err("wrong key should fail");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keep_awake_process_stays_alive_until_stopped() {
+        let mut child = start_keep_awake();
+        assert!(child.is_some(), "caffeinate process should start");
+        assert!(
+            child
+                .as_mut()
+                .expect("caffeinate child")
+                .try_wait()
+                .expect("caffeinate status")
+                .is_none(),
+            "caffeinate process should remain active while the app is running"
+        );
+
+        stop_keep_awake(&mut child);
+        assert!(child.is_none());
     }
 }
