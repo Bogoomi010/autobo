@@ -22,7 +22,7 @@ const QUICK_BUDGETS = [BOT_MIN_BUDGET_KRW, 10_000, 20_000, 50_000];
 
 const BOT_TYPE_OPTIONS: { type: BotType; text: string }[] = [
   { type: "scalp", text: `⚡ ${BOT_TYPE_LABEL.scalp} (최대 24시간 보유)` },
-  { type: "longterm", text: `🌱 ${BOT_TYPE_LABEL.longterm} (1~30일 보유)` },
+  { type: "longterm", text: `🌱 ${BOT_TYPE_LABEL.longterm} (1~30일 · 손절 즉시)` },
 ];
 
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
@@ -230,7 +230,7 @@ export function initBotCreateModal(): void {
         false
       );
       durationSlider.set(Math.max(BOT_MIN_LONGTERM_DURATION_MINUTES, scanDurationMinutes));
-      timeHint.textContent = "최소 24시간 보유 후 익절·손절을 판단하고, 설정한 보유기간이 끝나면 자동 매도해요.";
+      timeHint.textContent = "입력한 손절률은 즉시 강제 매도하고, 익절·반전은 24시간 후부터 판단해요. 기간 만료 시 자동 매도해요.";
     }
   }
 

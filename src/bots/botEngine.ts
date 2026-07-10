@@ -8,8 +8,8 @@
  * 단타봇/장투봇은 매도 알고리즘 자체는 같고(고정 익절/손절 + 붕괴 스코어 조기매도),
  * "매도를 허용하는 시점"만 다르다.
  * - 단타봇: 세션(스캔 창) 시간 안에서만 매도 판정을 하며, 세션이 끝나면 보유 중이어도 강제 매도한다.
- * - 장투봇: 매수 후 최소 24시간이 지나기 전에는 어떤 매도 판정도 하지 않고, 설정한 최대 보유기간에는 강제 청산한다.
- * 각자의 조건을 통과한 뒤부터는 동일하게 고정 익절/손절을 먼저 확인하고, 그 사이 구간에서는
+ * - 장투봇: 손절은 보유시간과 무관하게 즉시 적용하고, 익절/반전 판정은 24시간 뒤 열며 최대 보유기간에는 강제 청산한다.
+ * 각자의 조건을 통과한 뒤부터는 동일하게 고정 익절을 확인하고, 그 사이 구간에서는
  * 붕괴 스코어(진입 스코어의 반전판 — 고점 대비 되돌림/체결대금 감속/매도 우위 전환)가 임계값을
  * 넘으면 조기 매도한다.
  * 봇은 플레이어가 들고 다니는 돈(carried)과 무관하게 독립적으로 동작한다.
@@ -23,8 +23,8 @@ import { krw } from "../game/format";
 import { store } from "../game/state";
 import { investment } from "../systems/InvestmentSystem";
 import { COLLAPSE_THRESHOLD, scoreCollapse, scoreSurgeCandidates } from "./surge";
+import { decideLongtermExit } from "./exitPolicy";
 import {
-  BOT_HOLD_LIMIT_MS,
   BOT_MAX_LONGTERM_DURATION_MINUTES,
   BOT_MAX_BUDGET_KRW,
   BOT_MIN_BUDGET_KRW,
@@ -55,7 +55,7 @@ const SCORE_THRESHOLD = 25; // 배정 최소 점수(0~100)
 const FILL_POLL_TRIES = 5; // 실거래 체결 수량 확인 재시도
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000; // Asia/Seoul UTC+9 (DST 없음)
 
-// 보유 중 시장 스냅샷 로그 샘플링 주기 — 단타봇은 세션이 짧아 촘촘히, 장투봇은 최소 24시간+ 보유라 느슨하게
+// 보유 중 시장 스냅샷 로그 샘플링 주기 — 단타봇은 세션이 짧아 촘촘히, 장투봇은 장기 보유 가능성이 있어 느슨하게
 const MARKET_LOG_INTERVAL_MS: Record<BotType, number> = {
   scalp: 5_000,
   longterm: 60_000,
@@ -928,33 +928,32 @@ class BotEngine {
           this.executeSell(bot, "timeout", pnl);
           continue;
         }
+        if (pnl >= bot.settings.takeProfitRate) {
+          this.executeSell(bot, "profit", pnl);
+          continue;
+        }
+        if (pnl <= -bot.settings.stopLossRate) {
+          this.executeSell(bot, "loss", pnl);
+          continue;
+        }
       } else {
-        // 장투봇: 매수 후 24시간이 지나기 전에는 익절/손절 조건을 무시하고 계속 보유
         const heldMs = bot.lastActionAt ? now - bot.lastActionAt : 0;
-        if (heldMs < BOT_HOLD_LIMIT_MS) continue;
-      }
-
-      if (pnl >= bot.settings.takeProfitRate) {
-        this.executeSell(bot, "profit", pnl);
-        continue;
-      }
-      if (pnl <= -bot.settings.stopLossRate) {
-        this.executeSell(bot, "loss", pnl);
-        continue;
-      }
-
-      // 장투봇은 최소 24시간 이후 신호를 우선 확인하고, 설정한 최대 보유기간에 도달하면 강제 청산한다.
-      if (
-        bot.settings.botType === "longterm" &&
-        bot.lastActionAt &&
-        now - bot.lastActionAt >= bot.settings.scanWindow.durationMinutes * 60_000
-      ) {
-        this.executeSell(bot, "timeout", pnl);
-        continue;
+        const decision = decideLongtermExit({
+          pnlRate: pnl,
+          takeProfitRate: bot.settings.takeProfitRate,
+          stopLossRate: bot.settings.stopLossRate,
+          heldMs,
+          maxHoldMs: bot.settings.scanWindow.durationMinutes * 60_000,
+        });
+        if (decision === "wait") continue;
+        if (decision !== "evaluate_signal") {
+          this.executeSell(bot, decision, pnl);
+          continue;
+        }
       }
 
       // 고정 익절/손절 사이에서도 붕괴 스코어(추세 반전 조짐)가 임계값을 넘으면 조기 매도
-      // (단타봇은 세션 중, 장투봇은 최소 24시간을 넘긴 뒤부터 — 위에서 이미 각자의 조건을 통과한 상태)
+      // (단타봇은 세션 중, 장투봇은 매수 24시간 이후부터 — 위에서 이미 각자의 조건을 통과한 상태)
       const collapse = scoreCollapse({
         peakPrice: bot.peakPriceSinceEntry ?? bot.entryPrice,
         currentPrice: price,

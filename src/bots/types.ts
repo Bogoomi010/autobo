@@ -82,7 +82,7 @@ export interface ScanWindowConfig {
 /**
  * 봇 종류 — 매도 판정을 "언제부터 허용하는지"가 다르다(매도 알고리즘 자체는 공통).
  * - scalp(단타봇): 세션(스캔 창) 안에서만 매도 판정, 세션이 끝나면 보유 중이어도 강제 매도
- * - longterm(장투봇): 최소 24시간 이후 매도 판정을 열고, 설정한 최대 보유기간에는 강제 청산
+ * - longterm(장투봇): 손절은 즉시, 익절/반전 판정은 24시간 이후, 최대 보유기간에는 강제 청산
  */
 export type BotType = "scalp" | "longterm";
 
@@ -91,7 +91,7 @@ export const BOT_TYPE_LABEL: Record<BotType, string> = {
   longterm: "장투봇",
 };
 
-/** 장투봇 최소 보유시간(24시간) — 단타봇은 대신 BotSettings.scanWindow(세션)로 매도 시점을 제한한다 */
+/** 장투봇 익절/반전 판정 대기시간(24시간). 사용자가 설정한 손절선은 이 시간 전에도 즉시 적용한다. */
 export const BOT_HOLD_LIMIT_MS = 24 * 60 * 60 * 1000;
 
 /** 장투봇은 최소 1일, 최대 30일까지 한 거래의 보유기간을 설정한다. */

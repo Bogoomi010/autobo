@@ -74,18 +74,19 @@ idle → scanning → targeting → buying → holding → selling → sold_prof
 
 | | 단타봇(`scalp`) | 장투봇(`longterm`) |
 |---|---|---|
-| 매도 판정 시작 조건 | 세션(스캔 창) 안에서만 | 매수 후 최소 24시간(`BOT_HOLD_LIMIT_MS`) 경과 후 |
+| 매도 판정 시작 조건 | 세션(스캔 창) 안에서만 | 손절은 즉시, 익절/붕괴 신호는 매수 24시간 후 |
 | 세션/기간이 끝나면 | 보유 중이어도 강제 매도(`reason: "timeout"`) | 설정한 최대 보유기간(1~30일)에 강제 매도(`reason: "timeout"`) |
-| 24시간 전 신호(TP/SL/붕괴 스코어) | 세션 중이면 그대로 반영 | 전부 무시하고 보유 |
+| 24시간 전 신호(TP/SL/붕괴 스코어) | 세션 중이면 그대로 반영 | 손절(SL)은 즉시 반영, TP/붕괴는 대기 |
 
 세션(스캔 창)은 `BotSettings.scanWindow`로 지정한다. 새로 생성하는 단타봇은 생성 시점부터 사용자가
 고른 지속시간까지의 **1회성 창**으로 저장된다(`startAt`/`endAt`, 30분 단위, 최대 24시간).
 구버전 저장 봇처럼 `startAt`/`endAt`이 없는 설정은 기존 KST 시작시각 + 지속시간(평일 반복) 방식으로
 계속 해석한다. 이 창은 **신규 매수 스캔**과(단타봇에 한해) **매도 판정 마감**을 동시에 규정한다.
 장투봇은 1일 단위로 1~30일을 설정한다. `startAt`/`endAt`은 신규 매수 스캔 기간으로 쓰며,
-`durationMinutes`는 매수 체결 시점부터 계산하는 한 거래의 최대 보유기간으로도 사용한다. 최소 24시간
-전에는 모든 청산 신호를 무시하고, 24시간 이후에는 익절·손절·붕괴 신호를 평가한다. 신호가 없더라도
-최대 보유기간에 도달하면 강제 매도한다.
+`durationMinutes`는 매수 체결 시점부터 계산하는 한 거래의 최대 보유기간으로도 사용한다. 사용자가
+입력한 손절률은 보유시간과 무관하게 즉시 강제 매도한다. 익절과 붕괴 신호만 매수 24시간 이후부터
+평가하며, 신호가 없더라도 최대 보유기간에 도달하면 강제 매도한다. 따라서 장투봇의 24시간은
+최소 보유 보장이 아니라 익절·반전 판정의 대기시간이다.
 
 개별 중지된 봇을 다시 시작할 때 기존 `endAt`이 이미 지났다면, 같은 `durationMinutes`로 현재 시점부터
 새 스캔 창을 만든다.
@@ -138,9 +139,10 @@ score = 100 × (0.45 × nChange + 0.30 × nAccel + 0.25 × nBid)
 ```
 1. 매도 판정이 열려 있는가?
    - 단타봇: 세션이 끝났는가? → 끝났으면 즉시 강제 매도(reason="timeout"), 종료
-   - 장투봇: 매수 후 24시간이 지났는가? → 안 지났으면 이번 tick은 아무것도 안 함
+   - 장투봇: pnl ≤ -stopLossRate인가? → 보유시간과 무관하게 즉시 매도(reason="loss"), 종료
+   - 장투봇: 손절이 아니고 매수 후 24시간 전인가? → 익절/붕괴 판정 없이 보유
 2. 고정 익절: pnl ≥ takeProfitRate → 매도(reason="profit")
-3. 고정 손절: pnl ≤ -stopLossRate → 매도(reason="loss")
+3. 고정 손절(단타봇): pnl ≤ -stopLossRate → 매도(reason="loss")
 4. 장투봇 최대 보유기간 도달 → 강제 매도(reason="timeout")
 5. 붕괴 스코어 ≥ COLLAPSE_THRESHOLD(25) → 조기 매도(reason="signal")
 ```
@@ -153,8 +155,8 @@ pnl = (price × (1 - feeRate) - entryPrice × (1 + feeRate)) / entryPrice
 
 ### 4.1 고정 익절/손절
 
-`BotSettings.takeProfitRate`/`stopLossRate`(예: +3%/-2%)로 사용자가 봇마다 지정한다. 두 지표는
-하드 안전판이며, 3.과 4.보다 항상 먼저 확인한다.
+`BotSettings.takeProfitRate`/`stopLossRate`(예: +3%/-2%)로 사용자가 봇마다 지정한다. 손절은
+두 봇 모두 즉시 적용되는 하드 안전판이다. 장투봇의 익절만 매수 24시간 이후부터 적용한다.
 
 ### 4.2 붕괴 스코어 — 조기 매도 신호 (`scoreCollapse`, `surge.ts`)
 
@@ -173,7 +175,7 @@ collapseScore = 100 × (0.45 × nRetrace + 0.30 × nDecel + 0.25 × nAskDominanc
 
 `peakPrice`는 `TradeBot.peakPriceSinceEntry` — 매수 이후 매 tick 갱신되는 관측 최고가다.
 `collapseScore ≥ 25`(`COLLAPSE_THRESHOLD`)면 조기 매도한다. 단타봇은 세션 중, 장투봇은
-최소 24시간을 넘긴 뒤부터만 이 판정이 적용된다(§2의 게이트를 이미 통과한 상태).
+매수 24시간이 지난 뒤부터만 이 판정이 적용된다(§2의 게이트를 이미 통과한 상태).
 
 ### 4.3 매도 사유(reason) 정리
 
@@ -227,7 +229,7 @@ timestamp,trade_id,bot_id,bot_name,action,market,name_ko,mode,price,volume,inves
 Tauri 커맨드). 샘플링 주기는 봇 종류별로 다르다(`MARKET_LOG_INTERVAL_MS`):
 
 - 단타봇: 5초 — 세션이 짧아 촘촘한 해상도가 필요
-- 장투봇: 60초 — 보유 기간이 길어(최소 24시간+) 촘촘히 남기면 로그가 과도하게 커짐
+- 장투봇: 60초 — 장기 보유 가능성이 있어 촘촘히 남기면 로그가 과도하게 커짐
 
 ```
 timestamp,trade_id,bot_id,bot_name,market,mode,price,pnl_rate,trade_value_accel,bid_ratio,collapse_score,retracement
